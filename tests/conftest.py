@@ -85,6 +85,31 @@ def network(tmp_path: Path):
 
 
 @pytest.fixture(scope="session")
+def sample_audio(tmp_path_factory) -> bytes:
+    """Two seconds of tone, for audio-to-video and audio references."""
+    path = tmp_path_factory.mktemp("media") / "tone.wav"
+    subprocess.run(
+        [_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=440:sample_rate=48000:duration=2", "-ac", "2", str(path)],
+        check=True,
+    )
+    return path.read_bytes()
+
+
+@pytest.fixture(scope="session")
+def sample_video(tmp_path_factory) -> bytes:
+    """A short clip, for edit, extend and retake."""
+    path = tmp_path_factory.mktemp("media") / "clip.mp4"
+    subprocess.run(
+        [_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x176:rate=24:duration=2",
+         "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=2", "-c:v", "libx264", "-preset", "ultrafast",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)],
+        check=True,
+    )
+    return path.read_bytes()
+
+
+@pytest.fixture(scope="session")
 def images(tmp_path_factory) -> dict[str, bytes]:
     """Two small solid-color PNGs made with ffmpeg."""
     out = tmp_path_factory.mktemp("images")

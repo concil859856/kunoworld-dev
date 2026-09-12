@@ -67,6 +67,28 @@ def test_first_last_frame_and_keyframes_on_ltx(network, images):
     assert keys.receipt.body.video.width == 704
 
 
+def test_every_mode_survives_the_whole_pipeline(network, images, sample_audio, sample_video):
+    """One job per generation mode: a role the worker cannot classify fails the job."""
+    network.start_worker(ALL_PROFILES)
+    with network.client("JP") as client:
+        cases = {
+            "text_to_video": dict(model="ltx-2.5-fast", duration_s=2),
+            "image_to_video": dict(model="ltx-2.5-fast", duration_s=2, first_frame=images["red"]),
+            "last_frame": dict(model="ltx-2.5-fast", duration_s=2, last_frame=images["blue"]),
+            "keyframes": dict(model="ltx-2.5-fast", duration_s=2, keyframes=[(images["red"], 0.0), (images["blue"], 1.0)]),
+            "audio_to_video": dict(model="ltx-2.5-pro", duration_s=2, source_audio=sample_audio, first_frame=images["red"]),
+            # A lone source video infers video_edit, so retake has to say so.
+            "retake": dict(model="ltx-2.5-fast", duration_s=2, source_video=sample_video, mode="retake"),
+            "reference_to_video": dict(model="h3-reference", duration_s=5, reference_images=[images["red"]], reference_audio=[sample_audio]),
+            "video_edit": dict(model="h3-reference", duration_s=5, source_video=sample_video),
+            "extend_video": dict(model="h3-reference", duration_s=5, source_video=sample_video, mode="extend_video"),
+        }
+        for mode, kwargs in cases.items():
+            result = client.generate(f"A harbour at dawn ({mode})", **kwargs)
+            assert _is_mp4(result.video), mode
+            assert result.receipt.body.video.duration_s > 0, mode
+
+
 def test_region_rule_falls_back_to_ltx(network):
     network.start_worker(ALL_PROFILES)
     with network.client("US") as client:
