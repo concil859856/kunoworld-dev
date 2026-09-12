@@ -906,10 +906,12 @@ source = { editable = "subnet/validator" }
 dependencies = [
     { name = "httpx" },
     { name = "kuno-protocol" },
-    { name = "kunoworld" },
 ]
 
 [package.optional-dependencies]
+canary = [
+    { name = "kunoworld" },
+]
 chain = [
     { name = "bittensor" },
 ]
@@ -919,9 +921,9 @@ requires-dist = [
     { name = "bittensor", marker = "extra == 'chain'", specifier = ">=11" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "kuno-protocol", editable = "subnet/protocol" },
-    { name = "kunoworld", editable = "sdk/python" },
+    { name = "kunoworld", marker = "extra == 'canary'", editable = "sdk/python" },
 ]
-provides-extras = ["chain"]
+provides-extras = ["canary", "chain"]
 
 [[package]]
 name = "kuno-worker"
