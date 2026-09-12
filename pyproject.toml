@@ -1,0 +1,41 @@
+[project]
+name = "kunoworld-workspace"
+version = "0.1.0"
+description = "KunoWorld: private, TEE-attested video generation on Bittensor"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    # public: subnet repo (protocol + miner worker + validator)
+    "subnet/protocol",
+    "subnet/worker",
+    "subnet/validator",
+    # public: client SDKs
+    "sdk/python",
+    # private: platform repo (gateway API; the website lives in platform/web)
+    "platform/gateway",
+]
+
+[tool.uv.sources]
+kuno-protocol = { workspace = true }
+kuno-gateway = { workspace = true }
+kuno-worker = { workspace = true }
+kuno-validator = { workspace = true }
+kunoworld = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "kuno-protocol",
+    "kuno-gateway",
+    "kuno-worker",
+    "kuno-validator",
+    "kunoworld",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

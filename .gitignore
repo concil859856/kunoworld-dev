@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+data/
+node_modules/
+dist/
+.next/
+.env
+.env.local
+# Separate repositories, cloned alongside this one.
+/subnet/
+/sdk/
+/platform/
