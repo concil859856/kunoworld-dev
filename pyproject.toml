@@ -38,4 +38,4 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "subnet/protocol/tests", "subnet/worker/tests", "subnet/validator/tests", "sdk/python/tests"]
+testpaths = ["tests", "subnet/protocol/tests", "subnet/worker/tests", "subnet/validator/tests", "sdk/python/tests", "platform/gateway/tests"]

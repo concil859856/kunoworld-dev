@@ -162,6 +162,19 @@ def test_validator_attests_and_scores_miners(network):
     assert sum(weights.values()) == pytest.approx(1.0)
 
 
+def test_a_worker_that_leaves_releases_the_network(network):
+    worker = network.start_worker(["ltx-2.5-fast"])
+    assert any(e["status"] == "active" for e in httpx.get(f"{network.url}/validator/v1/enclaves").json())
+
+    worker.retire()
+
+    assert all(e["status"] != "active" for e in httpx.get(f"{network.url}/validator/v1/enclaves").json())
+    assert httpx.get(f"{network.url}/v1/models").json()["workers_online"] == 0
+    with network.client("JP") as client, pytest.raises(KunoError) as exc:
+        client.generate("nobody home", model="ltx-2.5-fast", timeout=5)
+    assert exc.value.code in ("no_capacity", "no_attested_worker", "mode_unavailable")
+
+
 def test_worker_with_unapproved_image_is_rejected(network):
     with pytest.raises(AssertionError, match="failed to register"):
         network.start_worker(["h3-turbo"], image_digest="sha256:" + os.urandom(8).hex())
