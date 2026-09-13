@@ -1,11 +1,12 @@
 # KunoWorld
 
-Private, verifiable AI video generation on a Bittensor subnet. Customers generate video
-with **MiniMax H3** and **LTX-2.5** on GPUs that run inside hardware enclaves (Intel TDX +
-NVIDIA confidential computing). Prompts, reference media and the finished video are
-encrypted end to end between the customer and an attested enclave; the platform and the GPU
-operator only ever handle ciphertext. Every video comes back with an enclave-signed
-certificate that anyone can verify.
+Private, verifiable AI video generation on a Bittensor subnet. The design: customers generate
+video with **MiniMax H3** and **LTX-2.5** on GPUs inside hardware enclaves (Intel TDX + NVIDIA
+confidential computing); prompts, reference media and the finished video are encrypted end to
+end between the customer and an attested enclave, so the platform and the GPU operator only
+ever handle ciphertext; and every video comes back with an enclave-signed certificate anyone
+can verify. The encryption and certificates work today against a simulated enclave. Real
+hardware attestation and GPU serving are not built yet — see [Status](#status).
 
 Website: **kunoworld.com**. The research behind the design is in [research/](research/).
 
@@ -87,7 +88,7 @@ scripts/check.sh          # python, JavaScript SDK, web typecheck/lint/build
 scripts/check.sh --web    # also the Playwright browser suite (starts the backend itself)
 ```
 
-101 Python tests, 8 JavaScript tests and the browser suite currently pass. Between them
+145 Python tests, 8 JavaScript tests and the browser suite currently pass. Between them
 they cover: the encrypted round trip end to end; that no plaintext prompt, input or output
 reaches the gateway's database or blob store; that a relay tampering with public parameters
 makes the job fail inside the enclave; that a crashing model never leaks the prompt into
@@ -114,9 +115,9 @@ Both public repositories have CI that runs their own tests standalone.
 - Tools: `kuno-preflight` (can this machine mine?) and `kuno-plan` (what exactly we send).
 
 **Written, not yet run on GPUs**
-- The H3 backend (official SGLang server; LightX2V Turbo script) and the LTX-2.5 backend
-  (official `ltx_pipelines` modules). Both currently cold-start per job; serving needs
-  resident runtimes.
+- The H3 backend (official SGLang server; LightX2V Turbo script) and the LTX-2.5 backend, both
+  as per-job cold starts (`KUNO_BACKEND=cold`) and as resident runtimes that keep each profile
+  loaded (`KUNO_BACKEND=real`).
 - Bittensor weight setting, unverified against the live chain.
 
 **Not built yet**
@@ -124,7 +125,7 @@ Both public repositories have CI that runs their own tests standalone.
 - The confidential VM image (reproducible, dm-verity weights) and golden manifest publishing.
 - Hardware-identity registry and collateral, deterministic verified mode with step-replay
   audits, the Turbo-track mechanism.
-- Accounts, payments, webhooks, C2PA manifests, real content classifiers (the safety gate
+- Accounts, payments, webhooks (the API stores `webhook_url` but never calls it), C2PA manifests, real content classifiers (the safety gate
   is a placeholder), Postgres/S3, rate limiting.
 
 ## Licence notes
