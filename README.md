@@ -123,8 +123,19 @@ Both public repositories have CI that runs their own tests standalone.
 - Validator: receipts re-verified against attested enclave keys, canary scoring, replay
   detection, signed switches that can't be rolled back.
 - Miner identity: a hotkey proof bound to the attested enclave, required in production.
-- Safety gate: normalizing blocklist plus an optional Qwen3Guard classifier (fails closed).
-- C2PA: a signed manifest embedded before sealing (`KUNO_PROVENANCE=c2pa`).
+- Sybil resistance: verified hardware identities (TDX PPID, GPU UEID) bound to one hotkey's
+  live enclave at the gateway, deduplicated again by validators, and per-GPU registration
+  collateral read from the chain (the storage read was checked against finney).
+- Verified mode: per-step latent commitments signed into receipts, retained openings, a gateway
+  audit relay limited to a validator's own canaries, and validators replaying a random step
+  bitwise (end to end with a deterministic dev denoiser). See `subnet/VERIFIED_MODE.md`.
+- Turbo track: owner-signed competitions, hotkey-signed submissions committed on chain,
+  attested benchmark jobs pinned to a candidate image, mechanism-1 weights, adoption tooling.
+  See `subnet/TURBO.md`.
+- Safety gate: normalizing blocklist, an optional Qwen3Guard prompt classifier and frame
+  classifiers over the rendered video (all fail closed).
+- C2PA: a manifest embedded before sealing, under short-lived certificates the gateway's CA
+  issues only to freshly attested enclaves, trusted against the KunoWorld root.
 
 **Written, not yet run on real hardware or live services**
 - The H3 backend (official SGLang server; LightX2V Turbo script) and the LTX-2.5 backend, both
@@ -136,13 +147,16 @@ Both public repositories have CI that runs their own tests standalone.
   script (`subnet/image/CVM.md` lists the on-host checks).
 - Bittensor weight setting, unverified against the live chain.
 - Real Stripe, NOWPayments and on-chain payments; the CI workflows; load and stress testing.
-- The safety classifier with real weights, and C2PA with a certificate from a trusted CA.
+- Verified-mode determinism and step replay on GPUs (the LTX-2.5 and H3 hooks and executors
+  are written; `subnet/VERIFIED_MODE.md` lists the Phase 0 checks before penalties go live).
+- Collateral and Turbo extrinsics on the live chain (storage and call names were read from
+  finney metadata; nothing was submitted), and the collateral amount per GPU.
+- The safety classifiers with real weights inside an image, and any accuracy evaluation.
 
 **Not built yet**
-- Hardware-identity registry and collateral, deterministic verified mode with step-replay
-  audits, the Turbo-track mechanism.
-- A certificate authority that issues C2PA certificates only to attested enclaves.
-- A frame-level output safety model.
+- C2PA Trust List membership for the KunoWorld root (HSM custody, OCSP, conformance).
+- A timestamp authority for production C2PA signing.
+- The confidential VM image's measured boot chain and published golden measurements.
 
 ## Licence notes
 
