@@ -138,7 +138,7 @@ def _balance(network) -> float:
 
     engine = create_engine(f"sqlite:///{network.data_dir / 'gateway.db'}")
     with engine.connect() as conn:
-        return conn.execute(text("select balance_usd from accounts where id='dev'")).scalar_one()
+        return conn.execute(text("select balance_micros from accounts where id='dev'")).scalar_one() / 1_000_000
 
 
 def test_validator_attests_and_scores_miners(network):
