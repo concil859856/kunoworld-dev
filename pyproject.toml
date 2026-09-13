@@ -31,7 +31,8 @@ kunoworld = { workspace = true }
 dev = [
     "pytest>=8",
     "kuno-protocol",
-    "kuno-gateway",
+    "kuno-gateway[s3,observability]",
+    "moto[s3]>=5",
     "kuno-worker",
     "kuno-validator",
     "kunoworld",
