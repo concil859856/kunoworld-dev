@@ -164,11 +164,13 @@ def test_validator_attests_and_scores_miners(network):
 
 def test_a_worker_that_leaves_releases_the_network(network):
     worker = network.start_worker(["ltx-2.5-fast"])
-    assert any(e["status"] == "active" for e in httpx.get(f"{network.url}/validator/v1/enclaves").json())
+    # The enclave feed is for registered validators.
+    validator = {"authorization": f"Bearer {network.env['KUNO_VALIDATOR_API_KEY']}"}
+    assert any(e["status"] == "active" for e in httpx.get(f"{network.url}/validator/v1/enclaves", headers=validator).json())
 
     worker.retire()
 
-    assert all(e["status"] != "active" for e in httpx.get(f"{network.url}/validator/v1/enclaves").json())
+    assert all(e["status"] != "active" for e in httpx.get(f"{network.url}/validator/v1/enclaves", headers=validator).json())
     assert httpx.get(f"{network.url}/v1/models").json()["workers_online"] == 0
     with network.client("JP") as client, pytest.raises(KunoError) as exc:
         client.generate("nobody home", model="ltx-2.5-fast", timeout=5)
