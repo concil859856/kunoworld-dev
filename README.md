@@ -114,19 +114,35 @@ Both public repositories have CI that runs their own tests standalone.
   page, developer docs.
 - Tools: `kuno-preflight` (can this machine mine?) and `kuno-plan` (what exactly we send).
 
-**Written, not yet run on GPUs**
+- Accounts: email sign-in links, web sessions, API keys, an integer ledger, the account page.
+- Top-ups: Stripe card payments, USDT through NOWPayments, TAO and subnet alpha sent to a
+  treasury coldkey from a linked wallet (tested against fakes of each provider; the chain
+  reader was checked read-only against finney). See `platform/gateway/PAYMENTS.md`.
+- Signed webhooks with retries, per-account rate limits, body limits, Postgres row locking,
+  an S3-compatible blob store, JSON logs, metrics, Sentry, container images, a compose stack.
+- Validator: receipts re-verified against attested enclave keys, canary scoring, replay
+  detection, signed switches that can't be rolled back.
+- Miner identity: a hotkey proof bound to the attested enclave, required in production.
+- Safety gate: normalizing blocklist plus an optional Qwen3Guard classifier (fails closed).
+- C2PA: a signed manifest embedded before sealing (`KUNO_PROVENANCE=c2pa`).
+
+**Written, not yet run on real hardware or live services**
 - The H3 backend (official SGLang server; LightX2V Turbo script) and the LTX-2.5 backend, both
   as per-job cold starts (`KUNO_BACKEND=cold`) and as resident runtimes that keep each profile
   loaded (`KUNO_BACKEND=real`).
+- TDX quote verification (dcap-qvl, tested on real Phala quotes and Intel collateral) and
+  NVIDIA GPU evidence (`nvattest` collection, NRAS or local verification); the production
+  attestation policy (`KUNO_ATTESTATION=production`); the worker image and dm-verity weights
+  script (`subnet/image/CVM.md` lists the on-host checks).
 - Bittensor weight setting, unverified against the live chain.
+- Real Stripe, NOWPayments and on-chain payments; the CI workflows; load and stress testing.
+- The safety classifier with real weights, and C2PA with a certificate from a trusted CA.
 
 **Not built yet**
-- Real TDX quote verification (dcap-qvl / Intel QVL) and NVIDIA GPU evidence (NVAT).
-- The confidential VM image (reproducible, dm-verity weights) and golden manifest publishing.
 - Hardware-identity registry and collateral, deterministic verified mode with step-replay
   audits, the Turbo-track mechanism.
-- Accounts, payments, webhooks (the API stores `webhook_url` but never calls it), C2PA manifests, real content classifiers (the safety gate
-  is a placeholder), Postgres/S3, rate limiting.
+- A certificate authority that issues C2PA certificates only to attested enclaves.
+- A frame-level output safety model.
 
 ## Licence notes
 
