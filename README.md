@@ -1,14 +1,42 @@
 # KunoWorld
 
-Private, verifiable AI video generation on a Bittensor subnet. The design: customers generate
-video with **MiniMax H3** and **LTX-2.5** on GPUs inside hardware enclaves (Intel TDX + NVIDIA
-confidential computing); prompts, reference media and the finished video are encrypted end to
-end between the customer and an attested enclave, so the platform and the GPU operator only
-ever handle ciphertext; and every video comes back with an enclave-signed certificate anyone
-can verify. The encryption and certificates work today against a simulated enclave. Real
-hardware attestation and GPU serving are not built yet — see [Status](#status).
+Private, verifiable AI video generation on a Bittensor subnet. Customers generate video with
+**MiniMax H3** and **LTX-2.5**, and choose per job how private it is. In **Private** mode the job
+runs on GPUs inside hardware enclaves (Intel TDX + NVIDIA confidential computing), and prompts,
+reference media and the finished video are encrypted end to end between the customer and an
+attested enclave. In **Standard** mode the platform handles the job in readable form, so it can
+run on any miner. Every video comes back with an enclave-signed certificate anyone can verify.
+The encryption and certificates work today against a simulated enclave. Real hardware
+attestation and GPU serving are not built yet — see [Status](#status).
 
 Website: **kunoworld.com**. The research behind the design is in [research/](research/).
+
+## How privacy works
+
+| | Private | Standard |
+|---|---|---|
+| Who can read your prompt, inputs and video | only you, and the attested enclave that renders it | you, KunoWorld, and the GPU provider that renders it |
+| Which miners may run it | confidential (TEE) miners only | any miner, including open-tier miners without a TEE |
+| Where the video is kept | on Cloudflare R2, as ciphertext only you can decrypt | on Cloudflare R2, encrypted at rest |
+| How long it is kept | until you delete it | until you delete it |
+| If you lose access | a lost key means a lost video: back up your keys | sign in again |
+
+The same rules apply in both modes:
+
+- **Only you can open your video.** Nobody at KunoWorld opens a customer's video, with two exceptions: content
+  reported as illegal (child sexual abuse material) and content under a legal preservation hold. Every such view
+  is logged. In Private mode, KunoWorld can't open a video at all unless whoever reports it supplies its key.
+- **No NSFW.** Sexual and NSFW content is not allowed in either mode. Prompts are checked inside the enclave in both
+  modes (and at the gateway for Standard jobs), and every finished video's frames are checked before it is signed.
+  Blocked jobs count as strikes against the account.
+- **Enforcement never needs to look.** Private content is policed by those in-enclave checks, account strikes and
+  restrictions, reports, and signed provenance that traces a surfaced copy back to its job.
+- **Sign-in.** Customers and operators sign in by email; the website keeps the session in an HttpOnly cookie and
+  never gives the browser a token. API keys exist only for developers using the API.
+
+Prices are placeholders until they are set. The legal entity and its jurisdiction are not decided yet, so the
+terms and privacy policy remain drafts. Details: [subnet/PRIVACY_MODES.md](subnet/PRIVACY_MODES.md),
+[subnet/SECURITY.md](subnet/SECURITY.md), and the gateway's `STANDARD_MODE.md` and `MODERATION.md`.
 
 ## Layout
 

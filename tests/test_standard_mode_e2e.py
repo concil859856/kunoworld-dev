@@ -86,7 +86,7 @@ def test_standard_job_round_trip_through_a_real_worker(network, images):
     assert httpx.get(f"{url}/v1/standard/videos/{job_id}/video", headers=dev).status_code == 410
 
 
-def test_a_blocked_standard_prompt_fails_in_the_enclave_and_counts_as_a_strike(network):
+def test_a_blocked_standard_prompt_is_refused_by_the_gateway_and_counts_as_a_strike(network):
     network.start_worker([PROFILE])
     dev = {"authorization": f"Bearer {network.env['KUNO_DEV_API_KEY']}", "x-kuno-country": "JP"}
     created = httpx.post(
@@ -94,9 +94,11 @@ def test_a_blocked_standard_prompt_fails_in_the_enclave_and_counts_as_a_strike(n
         json={"params": _params([]).model_dump(mode="json"), "prompt": "jailbait"},
         headers=dev,
     )
-    assert created.status_code == 201, created.text
-    status = _wait(network.url, dev, created.json()["job_id"])
-    assert (status["status"], status["error_code"]) == ("failed", "safety_blocked")
+    # The gateway can read a Standard prompt, so the content policy refuses it before anything is sealed or charged.
+    assert created.status_code == 422, created.text
+    assert created.json()["detail"] == {
+        "code": "content_policy", "message": "This prompt isn't allowed. Sexual and NSFW content is not permitted.",
+    }
     eligibility = httpx.get(f"{network.url}/v1/account/eligibility", headers=dev).json()
     # The seeded dev account collects the strike but stays exempt from restrictions.
     assert eligibility["strikes_24h"] == 1 and eligibility["restricted_until"] is None

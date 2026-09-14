@@ -101,7 +101,7 @@ def test_region_rule_falls_back_to_ltx(network):
 def test_owner_switch_routes_everything_to_ltx(network):
     network.start_worker(ALL_PROFILES)
     signed = sign_switch(network.owner_key(), SwitchConfig(mode="ltx", issued_at=int(time.time()) + 1))
-    admin = {"authorization": f"Bearer {network.env['KUNO_ADMIN_TOKEN']}"}
+    admin = _admin_session(network)
     assert httpx.put(f"{network.url}/admin/v1/switch", json=signed.model_dump(mode="json"), headers=admin).status_code == 200
 
     unsigned = signed.model_copy(update={"signature": None})
@@ -183,3 +183,20 @@ def test_worker_with_unapproved_image_is_rejected(network):
     with network.client("JP") as client, pytest.raises(KunoError) as exc:
         client.generate("anything", model="h3-turbo", timeout=5)
     assert exc.value.status in (503, 409)
+
+
+def _admin_session(network) -> dict:
+    """An operator who holds the admin role and is signed in. The shared admin token is break-glass and off by default."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from kuno_gateway import identity, roles
+
+    engine = create_engine(f"sqlite:///{network.data_dir / 'gateway.db'}")
+    try:
+        with Session(engine) as s, s.begin():
+            user, _, _ = roles.grant(s, "owner@kunoworld.test", roles.ADMIN, roles.CLI)
+            token, _ = identity.open_session(s, user.id, identity.WEB, 3600)
+    finally:
+        engine.dispose()
+    return {"authorization": f"Bearer {token}"}

@@ -12,6 +12,9 @@ PORT="${KUNO_PORT:-8080}"
 export KUNO_CORS_ORIGINS="${KUNO_CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}"
 uv run kuno-devkit init --data "$DATA" >/dev/null
 export KUNO_DATA_DIR="$DATA" KUNO_ALLOW_COUNTRY_OVERRIDE=1 KUNO_GATEWAY_URL="http://127.0.0.1:$PORT"
+# Dev only: the devkit's KUNO_ADMIN_TOKEN as break-glass (never honoured in production). Operators normally sign in
+# by email: uv run kuno-gateway grant-role --email you@example.com --role admin
+export KUNO_ALLOW_ADMIN_TOKEN="${KUNO_ALLOW_ADMIN_TOKEN:-1}"
 
 uv run kuno-gateway --port "$PORT" >"$DATA/logs/gateway.log" 2>&1 &
 GATEWAY=$!
