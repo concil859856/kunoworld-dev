@@ -11,8 +11,7 @@ import pytest
 
 from kuno_protocol.attestation import GoldenManifest
 from kuno_protocol.canonical import b64d
-from kuno_protocol.profiles import Mode, load_profiles
-from kuno_protocol.schemas import JobState
+from kuno_protocol.profiles import load_profiles
 from kuno_protocol.switch import SwitchConfig, sign_switch
 from kuno_validator.scoring import normalize
 from kuno_validator.validator import Validator
@@ -152,14 +151,18 @@ def test_validator_attests_and_scores_miners(network):
         canary = validator.run_canary("h3-turbo")
         assert canary.ok, canary.detail
         with network.client("US") as client:
-            client.generate("Morning market", model="ltx-2.5-fast", duration_s=2)
+            paid = client.generate("Morning market", model="ltx-2.5-fast", duration_s=2)
         verdicts = validator.check_enclaves()
         assert len(verdicts) == 2 and all(v.ok for v in verdicts.values())
-        weights = normalize(validator.score(verdicts))
+        scores = validator.score(verdicts)
+        weights = normalize(scores)
     finally:
         validator.close()
-    assert set(weights) <= {"5MinerA", "5MinerB"} and "5MinerA" in weights
-    assert sum(weights.values()) == pytest.approx(1.0)
+    # Only jobs a customer paid for earn job pay (a dev network's seeded balance counts as paid): the customer's job
+    # does, the canary on 5MinerA doesn't. Passing the canary still leaves 5MinerA in good standing.
+    earner = paid.receipt.body.miner_hotkey
+    assert earner in {"5MinerA", "5MinerB"} and weights == {earner: pytest.approx(1.0)}
+    assert not scores["5MinerA"].reasons and not scores["5MinerB"].reasons
 
 
 def test_a_worker_that_leaves_releases_the_network(network):

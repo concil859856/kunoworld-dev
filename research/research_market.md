@@ -1,5 +1,9 @@
 # Market & Competitive Research: TEE-Secured Video Generation Subnet (Bittensor)
 
+> **2026-09-14:** some prices below are out of date or were read at the wrong resolution (Seedance, Wan 3.0, Grok
+> Imagine, Pika, Kling credits, Azure confidential VMs). See [research_pricing.md](research_pricing.md) §9 and
+> [pricing/market.md](pricing/market.md).
+
 Research date: 2026-09-11. All prices USD. Sources are inline.
 
 Confidence labels:
