@@ -279,6 +279,18 @@ This is the stage-1 GPU test, on rented GPUs without a TEE; the confidential ove
 5. Confidential-mode overhead and load times in the real VM shapes.
 6. RTX 4090/5090 speed with offload, for the open tier.
 
+**Tools** (subnet `MINING.md`, "Benchmark a machine"):
+- **`kuno-bench`** runs items 1–4 and 6 on a rented box. It uses the worker's own backends, and writes one JSON file per machine.
+  - **Per profile:** cold and warm load, seconds per step, wall time over resolution × fps × duration, and peak GPU and host memory.
+  - **Per machine:** GPU model, count, driver and CC mode.
+  - **Limits:** `--time-budget` skips the slowest cells. `--backend mock` is for tests only.
+- **`kuno-devkit derive-rates`** turns those files into a proposal, e.g. `derive-rates bench-*.json --gpu-price h200=3.20 --gpu-price b200=4.50 --utilization 0.6 --margin 1.25`.
+  - **VCU weights:** fitted per profile and resolution, with a duration slope and fps multipliers. 1 VCU = one H200-second of cost; other GPUs count by price, and the median machine counts.
+  - **Rates:** `usd_per_vcu_second` and `gpu_hour_usd`, by the §3 rule.
+  - **Margin check:** every profile, resolution and privacy mode priced below 1.15× miner pay.
+  - **Output:** a diff against the current placeholders. It writes nothing without `--write-proposal`.
+- **Item 5** needs the same run inside the TDX VM. Until then, `--cc-overhead` stands in for it.
+
 ---
 
 ## 9. Corrections to research_market.md (2026-09-11)
