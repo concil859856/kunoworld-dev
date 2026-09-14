@@ -9,7 +9,6 @@ import httpx
 import pytest
 from cryptography import x509
 
-from kuno_gateway.ca import IssuanceLog
 from kuno_protocol import c2pa_certs, devkit
 from kuno_protocol.attestation import MockTEE
 from kuno_protocol.c2pa_certs import EnclaveBinding
@@ -53,7 +52,15 @@ def test_a_video_signed_under_a_gateway_issued_certificate_verifies_as_trusted(n
 
     # The certificate that signed is on the gateway's issuance record, bound to the evidence it verified.
     leaf = x509.load_pem_x509_certificates(certificate.chain_pem.encode())[0]
-    records = IssuanceLog(network.data_dir / "c2pa" / "issuance.jsonl").records()
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from kuno_gateway import c2pa_issuance
+
+    engine = create_engine(f"sqlite:///{network.data_dir / 'gateway.db'}")  # the issuance log is in the database
+    with Session(engine) as s:
+        records = c2pa_issuance.records(s)
+    engine.dispose()
     [record] = [r for r in records if r["serial"] == format(leaf.serial_number, "x")]
     binding = EnclaveBinding.from_certificate(leaf)
     assert record["enclave_id"] == binding.enclave_id == result.receipt.body.enclave_id

@@ -11,6 +11,8 @@ PORT="${KUNO_PORT:-8080}"
 # Both web dev-server ports: Playwright runs a second one for the region tests.
 export KUNO_CORS_ORIGINS="${KUNO_CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}"
 uv run kuno-devkit init --data "$DATA" >/dev/null
+# Local runs sign in many test users from one address; production keeps the defaults (20 per IP, 5 per email).
+export KUNO_SIGNIN_LINKS_PER_IP="${KUNO_SIGNIN_LINKS_PER_IP:-1000}" KUNO_SIGNIN_LINKS_PER_EMAIL="${KUNO_SIGNIN_LINKS_PER_EMAIL:-100}"
 export KUNO_DATA_DIR="$DATA" KUNO_ALLOW_COUNTRY_OVERRIDE=1 KUNO_GATEWAY_URL="http://127.0.0.1:$PORT"
 # Dev only: the devkit's KUNO_ADMIN_TOKEN as break-glass (never honoured in production). Operators normally sign in
 # by email: uv run kuno-gateway grant-role --email you@example.com --role admin
