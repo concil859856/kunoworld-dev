@@ -1,5 +1,10 @@
 # KunoWorld pricing: cost basis (2026-09-14)
 
+> **Partly superseded by measurement (2026-09-15).** The first real GPU runs are in
+> [measured_2026-09-15.md](measured_2026-09-15.md), and the decisions that follow are in `subnet/PRICING.md`.
+> The estimate below was right for `ltx-2.5-fast` and too low elsewhere: `ltx-2.5-pro` by 3–4x, `h3` by
+> 1.5–1.7x, `h3-reference` by 1.6–1.9x. Treat every speed and cost here as an estimate until measured.
+
 Marks: **[C]** confirmed from a primary page, dataset or repo; **[S]** secondary (aggregator, vendor claim, press, search snippet); **[U]** unverified or inferred; **[E]** my estimate, with the method stated.
 
 All prices are USD. "GPU-h" means GPU-hour. Rental prices come from pages fetched on 2026-09-13/14 unless another date is given. Tables are produced by `costmodel.py` and `extras.py` in this folder; rerun them after editing the inputs.
