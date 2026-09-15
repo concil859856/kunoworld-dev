@@ -269,17 +269,21 @@ def cmd_run_job(args) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    from kuno_protocol.profiles import InputRole
+
     profile = load_profiles()[args.profile]
     limits = profile.limits
+    prompt = args.prompt or PROMPT
     params = GenerationParams(
-        profile_id=profile.id, mode=Mode.TEXT_TO_VIDEO, duration_s=float(args.duration), resolution=args.resolution,
-        aspect_ratio=args.aspect, fps=args.fps, audio=bool(args.audio) and limits.audio, input_roles=[],
+        profile_id=profile.id, mode=Mode(args.mode), duration_s=float(args.duration), resolution=args.resolution,
+        aspect_ratio=args.aspect, fps=args.fps, audio=bool(args.audio) and limits.audio,
+        input_roles=[InputRole.REFERENCE_IMAGE] * len(args.reference_image),
     )
     validate_params(profile, params)
     width, height = limits.sizes[args.resolution][args.aspect]
     job_id = str(uuid.uuid4())
     record: dict = {
-        "profile": profile.id, "job_id": job_id, "privacy": args.privacy, "prompt": PROMPT, "seed": args.seed,
+        "profile": profile.id, "job_id": job_id, "privacy": args.privacy, "prompt": prompt, "seed": args.seed,
         "params": params.model_dump(mode="json"),
         "expected": {"width": width, "height": height, "frames": profile.num_frames(params.duration_s, params.fps), "audio": params.audio},
         "result": "fail", "error": None, "timeline": [],
@@ -295,13 +299,15 @@ def cmd_run_job(args) -> int:
     headers = {"authorization": f"Bearer {read_env(Path(args.data) / 'dev.env')['KUNO_DEV_API_KEY']}"}
     if args.country:
         headers["x-kuno-country"] = args.country
-    body = {"job_id": job_id, "params": params.model_dump(mode="json"), "prompt": PROMPT, "seed": args.seed, "options": {}, "inputs": []}
+    body = {"job_id": job_id, "params": params.model_dump(mode="json"), "prompt": prompt, "seed": args.seed, "options": {}, "inputs": []}
     private = args.privacy == "private"
+    if args.reference_image and not private:
+        return finish(1, "reference images are only wired for Private mode (--privacy private)")
     if private:
         # Private mode, as a customer's program does it: the SDK routes to an attested enclave (checked against the dev
         # golden manifest), seals the request to it, and later checks the enclave's receipt and opens the sealed video.
         from kuno_protocol.attestation import GoldenManifest
-        from kunoworld import KunoClient, KunoError
+        from kunoworld import Input, KunoClient, KunoError
 
         manifest = GoldenManifest.model_validate_json((Path(args.data) / "manifest.json").read_text())
         sdk = KunoClient(headers["authorization"].removeprefix("Bearer "), args.gateway, manifest=manifest, country=args.country or None)
@@ -310,8 +316,9 @@ def cmd_run_job(args) -> int:
         while True:  # a freshly registered worker can briefly be missing from job routing: retry capacity errors
             if private:
                 try:
+                    inputs = [Input.load(InputRole.REFERENCE_IMAGE, Path(path)) for path in args.reference_image]
                     prepared = sdk.prepare(
-                        PROMPT, model=profile.id, mode=Mode.TEXT_TO_VIDEO, duration_s=params.duration_s, resolution=args.resolution,
+                        prompt, inputs=inputs, model=profile.id, mode=Mode(args.mode), duration_s=params.duration_s, resolution=args.resolution,
                         aspect_ratio=args.aspect, fps=args.fps, audio=params.audio, seed=args.seed,
                     )
                     sdk_job = sdk.submit(prepared)
@@ -634,6 +641,9 @@ def main() -> int:
     run.add_argument("--poll", type=float, default=2.0)
     run.add_argument("--submit-retry-s", type=float, default=120.0)
     run.add_argument("--country", default="", help="sent as x-kuno-country; the dev gateway honours it")
+    run.add_argument("--mode", default="text_to_video", help="reference_to_video needs --reference-image")
+    run.add_argument("--reference-image", action="append", default=[], help="a reference image file (Private mode)")
+    run.add_argument("--prompt", default="", help="instead of the built-in prompt")
     run.add_argument("--privacy", choices=["standard", "private"], default="standard",
                      help="private goes through the kunoworld SDK (on PYTHONPATH): sealed to the attested enclave")
 

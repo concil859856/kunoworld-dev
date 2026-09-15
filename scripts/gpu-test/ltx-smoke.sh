@@ -52,6 +52,9 @@ else
   BACKEND="${KUNO_SMOKE_BACKEND:-real}"
 fi
 SKIP_LOGIN="${KUNO_SMOKE_SKIP_LOGIN:-$MOCK}"
+# always: pull every image; missing: use an image already on this machine (e.g. one built here) and pull the rest.
+PULL="${KUNO_SMOKE_PULL:-always}"
+case "$PULL" in always | missing) ;; *) echo "ltx-smoke: KUNO_SMOKE_PULL must be always or missing" >&2 && exit 2 ;; esac
 REGISTRY_HOST="${REGISTRY%%/*}"
 GHCR_USER="${KUNO_SMOKE_REGISTRY_USER:-concil859856}"
 if [ "$FAMILY" = h3 ]; then
@@ -87,6 +90,9 @@ if [ -n "$COUNTRY" ]; then COUNTRY_HEADER=(-H "x-kuno-country: $COUNTRY"); fi
 # KUNO_SMOKE_SDK_DIR, ./sdk beside this script, or the repository's sdk/python/src.
 if [ "$FAMILY" = h3 ]; then D_PRIVACY=private; else D_PRIVACY=standard; fi
 PRIVACY="${KUNO_SMOKE_PRIVACY:-$D_PRIVACY}"
+# h3-reference renders reference_to_video from KUNO_SMOKE_REFERENCE_IMAGE; KUNO_SMOKE_PROMPT replaces the built-in prompt.
+REFERENCE_IMAGE="${KUNO_SMOKE_REFERENCE_IMAGE:-}"
+PROMPT_OVERRIDE="${KUNO_SMOKE_PROMPT:-}"
 SDK_DIR="${KUNO_SMOKE_SDK_DIR:-}"
 if [ -z "$SDK_DIR" ]; then
   for candidate in "$HERE/sdk" "$HERE/../../sdk/python/src"; do
@@ -202,6 +208,12 @@ check_prerequisites() {
       pre_fail country "KUNO_SMOKE_COUNTRY is not set: H3 is served only to customers outside the US, EU, UK and Korea; set the test customer's two-letter country"
     fi
   fi
+
+  case ",$PROFILES," in
+    *,h3-reference,*)
+      if [ -f "$REFERENCE_IMAGE" ]; then pre_ok reference-image "$REFERENCE_IMAGE"
+      else pre_fail reference-image "h3-reference needs KUNO_SMOKE_REFERENCE_IMAGE, an image file"; fi ;;
+  esac
 
   if [ "$PRIVACY" = private ]; then
     if [ -n "$SDK_DIR" ]; then
@@ -442,6 +454,10 @@ pull_images() {
     started="$(now)"
     for image in "$WORKER_IMAGE" "$GATEWAY_IMAGE" "$DEVKIT_IMAGE"; do
       t="$(now)"
+      if [ "$PULL" = missing ] && docker image inspect "$image" >/dev/null 2>&1; then
+        info "using the local $image (KUNO_SMOKE_PULL=missing)"
+        continue
+      fi
       info "pulling $image"
       if ! DOCKER_CONFIG="${DOCKER_CFG:-${DOCKER_CONFIG:-$HOME/.docker}}" docker pull "$image" >>"$LOGS/pull.log" 2>&1; then
         die "could not pull $image ($(tail -n 1 "$LOGS/pull.log")); override with KUNO_SMOKE_REGISTRY, KUNO_SMOKE_*_TAG or KUNO_SMOKE_*_IMAGE"
@@ -449,7 +465,7 @@ pull_images() {
       state "timing.pull.${image##*/}_s" "$(since "$t")"
     done
     state timing.image_pull_s "$(since "$started")"
-    ok "pulled 3 images in $(since "$started")s"
+    ok "images ready in $(since "$started")s"
     if [ -n "$DOCKER_CFG" ]; then
       rm -rf "$DOCKER_CFG"
       DOCKER_CFG=""
@@ -572,12 +588,13 @@ run_preflight() {
 
 run_profile() {
   local p="$1"
-  local pre="profile.$p" name="$PREFIX-worker-$p" audio_flag=() code started registered gpus
+  local pre="profile.$p" name="$PREFIX-worker-$p" audio_flag=() code started registered gpus mode=text_to_video extra=()
+  if [ "$p" = h3-reference ]; then mode=reference_to_video; fi
   say "$p"
   if [ "$AUDIO" != 1 ]; then audio_flag=(--no-audio); fi
 
   code=0
-  docker run --rm --label "$LABEL" --entrypoint kuno-plan "$WORKER_IMAGE" "$p" text_to_video \
+  docker run --rm --label "$LABEL" --entrypoint kuno-plan "$WORKER_IMAGE" "$p" "$mode" \
     --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --models-dir "$MOUNT" \
     ${audio_flag[@]+"${audio_flag[@]}"} >"$RESULTS/plan-$p.txt" 2>"$LOGS/plan-$p.stderr" || code=$?
   state "$pre.plan_exit" "$code"
@@ -631,7 +648,7 @@ run_profile() {
   last_note=$(date +%s)
   registered=0
   while :; do
-    body="$(curl -fsS ${COUNTRY_HEADER[@]+"${COUNTRY_HEADER[@]}"} "$GATEWAY_URL/v1/route?mode=text_to_video&profile_id=$p&privacy=$PRIVACY" 2>/dev/null || true)"
+    body="$(curl -fsS ${COUNTRY_HEADER[@]+"${COUNTRY_HEADER[@]}"} "$GATEWAY_URL/v1/route?mode=$mode&profile_id=$p&privacy=$PRIVACY" 2>/dev/null || true)"
     case "$body" in *"\"profile_id\":\"$p\""*) case "$body" in *'"enclaves":[{'*) registered=1 ;; esac ;; esac
     if [ "$registered" = 1 ]; then break; fi
     if ! container_running "$name"; then
@@ -658,10 +675,15 @@ run_profile() {
     state "$pre.cold_start_to_registered_s" "$(since "$started")"
     ok "registered $(since "$started")s after docker run"
 
+    if [ "$mode" = reference_to_video ]; then
+      mkdir -p "$RESULTS/inputs" && cp "$REFERENCE_IMAGE" "$RESULTS/inputs/"
+      extra+=(--reference-image "/out/inputs/$(basename "$REFERENCE_IMAGE")")
+    fi
+    if [ -n "$PROMPT_OVERRIDE" ]; then extra+=(--prompt "$PROMPT_OVERRIDE"); fi
     code=0
     helper "$GATEWAY_IMAGE" run-job --gateway "$GATEWAY_URL" --data /var/lib/kuno/data --profile "$p" \
       --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --audio "$AUDIO" \
-      --country "$COUNTRY" --privacy "$PRIVACY" --out /out/jobs --timeout "$JOB_TIMEOUT" 2>&1 | tee "$LOGS/job-$p.log" || code=$?
+      --country "$COUNTRY" --privacy "$PRIVACY" --mode "$mode" ${extra[@]+"${extra[@]}"} --out /out/jobs --timeout "$JOB_TIMEOUT" 2>&1 | tee "$LOGS/job-$p.log" || code=$?
     if [ "$code" != 0 ]; then
       state "$pre.error" "the job did not produce a video (see logs/job-$p.log and logs/worker-$p.log)"
     elif ! ffprobe -v error -print_format json -show_format -show_streams "$JOBS/$p.mp4" >"$JOBS/$p.ffprobe.json" 2>"$LOGS/ffprobe-$p.log"; then
