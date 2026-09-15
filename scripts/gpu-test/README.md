@@ -1,0 +1,240 @@
+# LTX-2.5 smoke test on a rented GPU
+
+`ltx-smoke.sh` runs KunoWorld's real LTX-2.5 worker image on one GPU server and proves one video per profile comes
+out end to end:
+
+1. It checks the machine.
+2. It pulls the images and downloads only the weights the profiles load.
+3. It starts a dev gateway and a worker with the simulated TEE (`KUNO_TEE=mock`), all on 127.0.0.1.
+4. For each profile, it submits a Standard-mode job with the dev API key, downloads the MP4 and checks it with ffprobe.
+5. It writes timings, peak GPU memory and host RAM, a results JSON and every log into one tarball.
+
+Nothing touches a chain, and nothing listens beyond 127.0.0.1.
+
+`smoke.py` beside the script holds the helpers. They run inside the images, so the host needs only `bash`, `docker`,
+`curl`, `ffprobe` and `tar`.
+
+## What to rent
+
+| | Needed | Checked by the script |
+|---|---|---|
+| GPU | one NVIDIA GPU with ≥ 80 GB, e.g. RTX PRO 6000 Blackwell 96 GB, H100/H200 | `nvidia-smi` memory ≥ 80000 MiB |
+| Driver | R570 or newer (the image runs CUDA 12.8 PyTorch 2.11) | `driver_version` major ≥ 570 |
+| Docker | with the NVIDIA container toolkit | `docker run --gpus all ubuntu:24.04 nvidia-smi -L` |
+| RAM | ≥ 64 GB (95 GB is comfortable) | `MemTotal` |
+| Disk | ≥ 200 GB free where the weights go | `df` on `KUNO_SMOKE_DIR` (weights already there count) |
+| Packages | `curl`, `ffprobe` (`apt-get install -y ffmpeg`) | `command -v` |
+
+No TDX or confidential-computing mode is needed.
+
+## Run it
+
+Set two environment variables:
+- `HF_TOKEN`: a Hugging Face read token for the account that accepted the LTX-2.5 licence (the repo is gated).
+- `GITHUB_TOKEN`: a GitHub token with `read:packages` for the private `ghcr.io/concil859856` images.
+
+```bash
+scp -r scripts/gpu-test user@gpu-box:~/gpu-test        # or git clone and cd into scripts/gpu-test
+ssh user@gpu-box
+export HF_TOKEN=hf_...  GITHUB_TOKEN=ghp_...            # read -rs is safer than typing them into history
+KUNO_SMOKE_DIR=/data/kuno-smoke ~/gpu-test/ltx-smoke.sh # KUNO_SMOKE_DIR defaults to ./kuno-smoke
+```
+
+Run it inside `tmux` so a dropped SSH session doesn't stop it. It exits with:
+- 0 if every profile produced a checked video;
+- 1 if anything failed;
+- 2 if a prerequisite failed, in which case nothing was started.
+
+The tokens are never echoed or written to disk:
+- The GitHub token logs Docker in through `--password-stdin`, into a temporary Docker config that is deleted after the pull.
+- `HF_TOKEN` reaches the download container by name (`-e HF_TOKEN`).
+- Any secret value that shows up in a log is replaced with `[redacted]` before the tarball is made.
+
+### Expected time and disk
+
+| Step | Time | Disk |
+|---|---|---|
+| Prerequisites | < 1 min | |
+| Image pull: worker 6.6 GB compressed, gateway and mock-worker < 0.5 GB | 2–10 min | about 25 GB under Docker's root |
+| Weights, both profiles (resumable) | 10–40 min at 1–10 Gbit/s | 119 GB; `ltx-2.5-fast` alone 81 GB |
+| Per profile: worker start → registered (hash 81 GB of weights, load to GPU) | 3–8 min | |
+| Per profile: one 2 s 720p job | fast < 1 min; pro 1–3 min (30 steps with guidance) | < 10 MB |
+| **First run** | **about 45–75 min** | **about 150 GB** |
+| Re-run (images and weights present) | about 15–25 min | |
+
+These are estimates. Nothing here has run on a GPU yet, and `results.json` records the real numbers.
+
+## Why `KUNO_BACKEND=real`
+
+The worker has two GPU backends (`subnet/MINING.md`, 3b):
+- `cold` runs `python -m ltx_pipelines.<pipeline>` with the split `Lightricks/LTX-2.5` files.
+- `real` keeps the diffusers `LTX2Pipeline` / `LTX2ConditionPipeline` resident, using the `Lightricks/LTX-2.5-Diffusers` layout.
+
+The LTX image is built from `subnet/image/pyproject.toml`, which installs `kuno-worker[nvidia,gpu,safety,provenance]`. The
+`gpu` extra is torch, torchaudio, torchao, diffusers 0.40, transformers 5.x, accelerate and PyAV. Neither `ltx_pipelines`
+nor `ltx_core` is in it. Checked in `kuno-worker:ltx`:
+- `import ltx_pipelines` fails;
+- `from diffusers import LTX2Pipeline, LTX2ConditionPipeline` works.
+
+`cold` would fail on its first job, so the script uses `real`, the image's own default.
+
+## Which weights, and how
+
+The download runs `smoke.py fetch-weights` inside the worker image. It uses the image's `huggingface_hub` 1.31 with `hf_xet`;
+the host needs no Python and no `hf` CLI.
+
+The script pins the repo revision to `426936f8b22d…`, `main` on 2026-09-15; `KUNO_SMOKE_HF_REVISION` overrides it.
+
+**What it downloads:**
+- `model_index.json`.
+- Every folder the profiles' precision recipes list. The worker hashes all of them before it loads, so they must all exist:
+  `scheduler`, `tokenizer`, `text_encoder`, `connectors`, `vae`, `audio_vae`, `vocoder`, `latent_upsampler`, `prompt_enhancer`.
+- Every other component `model_index.json` names. `LTX2Pipeline.from_pretrained` loads those too, e.g. `processor`, `duration_head`.
+- The profile's transformer: `transformer/` for `ltx-2.5-fast`, `transformer_full/` for `ltx-2.5-pro`.
+
+In a folder with a `*.safetensors.index.json`, only the shards the index names are fetched. The repo also carries copies
+nothing loads:
+- a second 38 GB shard set in `transformer/`;
+- a single-file `connectors` (6.3 GB).
+
+**Skipped:** those copies, the 9.7 GB distilled LoRA at the repo root, and the `ltx-2.5-4k`-only folders. `weights.json`
+lists what was fetched and what was not.
+
+Files land in `KUNO_SMOKE_DIR/models/ltx-2.5`, which is mounted read-only into the worker at `/models/ltx-2.5`. Re-running
+resumes partial files and skips complete ones.
+
+## Output
+
+Everything for one run is under `KUNO_SMOKE_DIR/runs/<UTC timestamp>/`:
+
+| Path | What it is |
+|---|---|
+| `ltx-smoke-<stamp>.tar.gz` | `results/` below, packed. Send this one file back. |
+| `results/results.json` | Pass/fail per profile and overall, with timings and peak memory; details below. |
+| `results/state.tsv` | The raw facts the script recorded, one `key<TAB>value` per line; `results.json` is built from it. |
+| `results/samples.csv` | Once a second: host RAM total/used (KiB), and the busiest GPU's memory used/total (MiB) and utilization. |
+| `results/weights.json` | Repo, resolved revision, folders and bytes downloaded, seconds, and what was skipped. |
+| `results/preflight.txt`, `preflight.json` | `kuno-preflight --no-tee --gateway …` inside the worker image. |
+| `results/plan-<profile>.txt` | `kuno-plan <profile> text_to_video …`. It prints the `cold` backend's `ltx_pipelines` command, which is informational under `real`. |
+| `results/resident-call-<profile>.json` | The keyword arguments the resident backend will pass to diffusers, checked against the pipeline's signature before the worker starts. |
+| `results/jobs/<profile>.mp4` | The generated video. |
+| `results/jobs/<profile>.job.json` | Job id, params, status timeline, receipt summary, wall/queue/render/download seconds, SHA-256 against the receipt. |
+| `results/jobs/<profile>.ffprobe.json`, `.check.json` | ffprobe's output and the checks run on it. |
+| `results/logs/` | `gateway.log`, `worker-<profile>.log`, `job-<profile>.log`, `weights.log`, `pull.log`, `devkit.log`, and the stderr of preflight, plan and ffprobe. |
+| `data/` | The gateway's data dir: dev keys, SQLite, blobs. Owned by uid 10001 and **not** in the tarball. |
+
+**`results.json`:**
+- `timings_s`: `image_pull_s`, `weights_download_s`, `devkit_init_s`, `gateway_start_s`.
+- Per profile under `profiles.<id>`:
+  - `worker_cold_start_to_registered_s`;
+  - `job_wall_s`, `job_queued_s`, `render_s_from_receipt`;
+  - `video`, with its ffprobe summary;
+  - `checks`;
+  - `peaks`: GPU MiB and host RAM GiB while that profile's worker ran.
+- `peaks_whole_run`, `host`, `images` (tags and image IDs), `settings`, `prerequisites`.
+
+**What the ffprobe check requires:**
+- an MP4 whose SHA-256 is the receipt's content digest;
+- a video stream of the requested size (1280x704 for 720p 16:9);
+- a duration within 0.5 s of the request and 0.15 s of the receipt;
+- with audio on, an audio stream whose length matches the video within 0.25 s.
+
+A wrong frame rate, frame count or a non-H.264 codec is reported as a warning.
+
+Containers are removed on exit, including Ctrl-C. The weights, `results/` and `data/` stay. To delete a run's `data/` as a
+non-root user:
+
+```bash
+docker run --rm -v "$PWD/kuno-smoke/runs/<stamp>:/r" ubuntu:24.04 rm -rf /r/data
+```
+
+## Settings
+
+All optional.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KUNO_SMOKE_DIR` | `./kuno-smoke` | Weights, runs and tarballs |
+| `KUNO_SMOKE_MODELS_DIR` | `$KUNO_SMOKE_DIR/models/ltx-2.5` | Where the weights are kept |
+| `KUNO_SMOKE_PROFILES` | `ltx-2.5-fast,ltx-2.5-pro` | Profiles to test, in order; one worker container each |
+| `KUNO_SMOKE_DURATION`, `_RESOLUTION`, `_ASPECT`, `_FPS`, `_AUDIO` | `2`, `720p`, `16:9`, `24`, `1` | The test job |
+| `KUNO_SMOKE_LTX_OFFLOAD` | `auto` | `KUNO_LTX_OFFLOAD` for the worker: `auto`, `none`, `model` or `group` |
+| `KUNO_SMOKE_WEIGHTS_VERIFY` | `full` | `KUNO_WEIGHTS_VERIFY` (`size` needs `KUNO_MODEL_DIGEST`) |
+| `KUNO_MODEL_DIGEST` | unset | Passed to the worker when set |
+| `KUNO_SMOKE_REGISTRY` | `ghcr.io/concil859856` | Image registry and namespace |
+| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-246910fe4203`, `70f74725510f`, `70f74725510f` | Image tags |
+| `KUNO_SMOKE_WORKER_IMAGE`, `_GATEWAY_IMAGE`, `_DEVKIT_IMAGE` | built from the two rows above | Whole image references, e.g. `…@sha256:…` |
+| `KUNO_SMOKE_SKIP_LOGIN`, `KUNO_SMOKE_REGISTRY_USER` | `0`, `concil859856` | Skip `docker login` (public images); the login user name |
+| `KUNO_SMOKE_HF_REPO`, `KUNO_SMOKE_HF_REVISION` | `Lightricks/LTX-2.5-Diffusers`, `426936f8b22d…` | Weights source |
+| `KUNO_SMOKE_DOWNLOAD_WORKERS` | `4` | Files downloaded in parallel |
+| `KUNO_SMOKE_PORT` | `18180` | Gateway port on 127.0.0.1 |
+| `KUNO_SMOKE_REGISTER_TIMEOUT`, `KUNO_SMOKE_JOB_TIMEOUT` | `2700`, `1800` | Seconds |
+| `KUNO_SMOKE_MIN_DRIVER`, `_MIN_GPU_MIB`, `_MIN_DISK_GB`, `_MIN_RAM_GB` | `570`, `80000`, `200`, `64` | Prerequisite thresholds |
+| `KUNO_SMOKE_MOCK` | `0` | `1`: the dry run below |
+
+## Dry run without a GPU
+
+```bash
+KUNO_SMOKE_MOCK=1 KUNO_SMOKE_DIR=/tmp/gpu-smoke scripts/gpu-test/ltx-smoke.sh
+```
+
+**What changes:**
+- It skips the GPU, driver, RAM, disk and token checks and the weights download.
+- It uses the local images `kuno-worker:ltx`, `kunoworld/gateway:local` and `kunoworld/mock-worker:local`.
+- It runs the same LTX worker image with `KUNO_BACKEND=mock` (placeholder video from ffmpeg).
+
+**What still runs:** devkit init, the gateway, preflight and plan, the resident-call check, worker registration, the
+Standard job, polling, download, ffprobe, `results.json`, the tarball and cleanup. Only the model itself is left out.
+
+It takes about a minute. Each worker registers in about 9 s, most of it loading the safety classifiers on the CPU, and
+each job takes about 6 s. `preflight` exits 1 ("no NVIDIA GPU"); that is recorded, not judged. `ltx-2.5-fast` shows the
+`second_stage_sigmas` warning described under Troubleshooting.
+
+## Troubleshooting
+
+**The weights download stops with HTTP 401 or 403.** `Lightricks/LTX-2.5-Diffusers` is gated.
+- 401: `HF_TOKEN` is missing, mistyped or revoked.
+- 403: the token's account has no access. Open the repo page signed in as the account that accepted the licence. A
+  fine-grained token also needs "Read access to contents of all public gated repos you can access".
+
+Nothing else starts. Re-run once fixed; completed files are kept.
+
+**`driver: NVIDIA 550.x is older than R570`.** The image's CUDA 12.8 PyTorch needs R570 or newer. Pick a host image with a newer
+driver; a driver can't be upgraded from inside a container.
+
+**`docker-gpu` fails.** Install `nvidia-container-toolkit`, run `sudo nvidia-ctk runtime configure --runtime=docker`, then
+`sudo systemctl restart docker`.
+
+**`docker login` or pull is denied.** `GITHUB_TOKEN` needs `read:packages` and access to the private `concil859856`
+packages. To use another registry, set `KUNO_SMOKE_REGISTRY` and the tags.
+
+**Out of memory.**
+- **GPU:** `torch.OutOfMemoryError` / `CUDA out of memory` in `logs/worker-<profile>.log`. It shows either before
+  registering (loading) or as a failed job. With `KUNO_LTX_OFFLOAD=auto` and no hardware class, the whole bf16 pipeline goes
+  onto the GPU:
+  - the transformer, about 39 GiB;
+  - the Gemma text encoder, about 22 GiB;
+  - the prompt enhancer, about 9.5 GiB;
+  - the connectors, VAEs and vocoder, about 8 GiB;
+  - the safety classifiers, and activations.
+
+  That is tight on 96 GB. Re-run with `KUNO_SMOKE_LTX_OFFLOAD=model` (slower), or `group`.
+- **Host:** `OOMKilled true` in `state.tsv` / `results.json`. It needs more RAM, or `KUNO_SMOKE_PROFILES=ltx-2.5-fast` on
+  its own.
+
+**The worker never registers.** The script prints the last worker log lines and records the reason. In
+`logs/worker-<profile>.log`:
+- **still `loading ltx-2.5-…`:** hashing 81 GB (`KUNO_WEIGHTS_VERIFY=full`) then loading can pass 10 minutes on slow disks.
+  Raise `KUNO_SMOKE_REGISTER_TIMEOUT`.
+- **`… needs <folder> under /models/ltx-2.5, which is missing`:** the weights for that profile were not downloaded. Run
+  again with the same `KUNO_SMOKE_PROFILES`.
+- **`no CUDA device is visible to PyTorch`:** the container has no GPU; see `docker-gpu` above.
+- **`the gateway rejected this enclave's attestation`:** the worker's `kuno_protocol` and the gateway's disagree. Use the
+  default tags together.
+- **`worker loop exited unexpectedly (a backend failed to warm up?)`:** loading failed; the traceback is above that line.
+
+**The job fails with `TypeError: … unexpected keyword argument 'second_stage_sigmas'`.** The worker image predates
+`ltx-0.1.0-246910fe4203`. Older images passed `second_stage_sigmas` straight to diffusers 0.40's `LTX2Pipeline`, which has no
+such parameter; from that tag on, the worker runs the two stages itself through the latent upsampler. Use the default tag.
+
+**`127.0.0.1:18180 is in use`.** Set `KUNO_SMOKE_PORT`.
