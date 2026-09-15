@@ -622,7 +622,10 @@ run_profile() {
   )
   if [ "$FAMILY" = h3 ]; then
     # One worker on four GPUs (Ulysses 4); NCCL needs the host's shared memory. SGLang's log is kept on a dev box.
+    # KUNO_MINER_COUNTRY: H3 is licensed by territory, so the gateway refuses to register it from an excluded
+    # (or unknown) country. Here it is the country this test machine runs in.
     worker+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$MIN_GPUS" -e KUNO_SGLANG_LOG=inherit)
+    if [ -n "$COUNTRY" ]; then worker+=(-e KUNO_MINER_COUNTRY="$COUNTRY"); fi
     gpus="$(seq -s, 0 $((MIN_GPUS - 1)))"
   else
     worker+=(-e KUNO_LTX_MODELS_DIR="$MOUNT" -e KUNO_LTX_OFFLOAD="$LTX_OFFLOAD")
