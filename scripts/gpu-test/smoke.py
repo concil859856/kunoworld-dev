@@ -279,7 +279,7 @@ def cmd_run_job(args) -> int:
     width, height = limits.sizes[args.resolution][args.aspect]
     job_id = str(uuid.uuid4())
     record: dict = {
-        "profile": profile.id, "job_id": job_id, "privacy": "standard", "prompt": PROMPT, "seed": args.seed,
+        "profile": profile.id, "job_id": job_id, "privacy": args.privacy, "prompt": PROMPT, "seed": args.seed,
         "params": params.model_dump(mode="json"),
         "expected": {"width": width, "height": height, "frames": profile.num_frames(params.duration_s, params.fps), "audio": params.audio},
         "result": "fail", "error": None, "timeline": [],
@@ -293,21 +293,49 @@ def cmd_run_job(args) -> int:
         return code
 
     headers = {"authorization": f"Bearer {read_env(Path(args.data) / 'dev.env')['KUNO_DEV_API_KEY']}"}
+    if args.country:
+        headers["x-kuno-country"] = args.country
     body = {"job_id": job_id, "params": params.model_dump(mode="json"), "prompt": PROMPT, "seed": args.seed, "options": {}, "inputs": []}
+    private = args.privacy == "private"
+    if private:
+        # Private mode, as a customer's program does it: the SDK routes to an attested enclave (checked against the dev
+        # golden manifest), seals the request to it, and later checks the enclave's receipt and opens the sealed video.
+        from kuno_protocol.attestation import GoldenManifest
+        from kunoworld import KunoClient, KunoError
+
+        manifest = GoldenManifest.model_validate_json((Path(args.data) / "manifest.json").read_text())
+        sdk = KunoClient(headers["authorization"].removeprefix("Bearer "), args.gateway, manifest=manifest, country=args.country or None)
     with httpx.Client(base_url=args.gateway, timeout=60.0) as client:
         started = time.time()
         while True:  # a freshly registered worker can briefly be missing from job routing: retry capacity errors
-            try:
-                response = client.post("/v1/standard/videos", json=body, headers=headers)
-            except httpx.HTTPError as exc:
-                response, problem = None, f"could not reach the gateway: {type(exc).__name__}"
-            else:
-                code, message = _error_text(response) if response.status_code != 201 else (None, "")
-                if response.status_code == 201 or code == "duplicate_job":
+            if private:
+                try:
+                    prepared = sdk.prepare(
+                        PROMPT, model=profile.id, mode=Mode.TEXT_TO_VIDEO, duration_s=params.duration_s, resolution=args.resolution,
+                        aspect_ratio=args.aspect, fps=args.fps, audio=params.audio, seed=args.seed,
+                    )
+                    sdk_job = sdk.submit(prepared)
+                    job_id = record["job_id"] = sdk_job.job_id
                     break
-                problem = f"the gateway refused the job: HTTP {response.status_code} {code}: {message}"
-                if response.status_code not in (409, 429, 503):
-                    return finish(1, problem)
+                except KunoError as exc:
+                    status_code, code, message = (list(exc.args) + [0, "error", ""])[:3]
+                    problem = f"the gateway refused the job: HTTP {status_code} {code}: {message}"
+                    if status_code not in (409, 429, 503):
+                        return finish(1, problem)
+                except httpx.HTTPError as exc:
+                    problem = f"could not reach the gateway: {type(exc).__name__}"
+            else:
+                try:
+                    response = client.post("/v1/standard/videos", json=body, headers=headers)
+                except httpx.HTTPError as exc:
+                    response, problem = None, f"could not reach the gateway: {type(exc).__name__}"
+                else:
+                    code, message = _error_text(response) if response.status_code != 201 else (None, "")
+                    if response.status_code == 201 or code == "duplicate_job":
+                        break
+                    problem = f"the gateway refused the job: HTTP {response.status_code} {code}: {message}"
+                    if response.status_code not in (409, 429, 503):
+                        return finish(1, problem)
             if time.time() - started > args.submit_retry_s:
                 return finish(1, problem)
             print(f"  {problem}; retrying", flush=True)
@@ -315,7 +343,7 @@ def cmd_run_job(args) -> int:
         submitted = time.time()
         record["submit_s"] = round(submitted - started, 2)
         print(
-            f"{profile.id}: submitted Standard job {job_id}: {width}x{height}, {params.duration_s:g}s at {params.fps} fps, "
+            f"{profile.id}: submitted {args.privacy.capitalize()} job {job_id}: {width}x{height}, {params.duration_s:g}s at {params.fps} fps, "
             f"audio {'on' if params.audio else 'off'}", flush=True,
         )
         last = None
@@ -363,11 +391,17 @@ def cmd_run_job(args) -> int:
         if receipt.get("started_at") and receipt.get("finished_at"):
             record["render_s"] = round(float(receipt["finished_at"]) - float(receipt["started_at"]), 2)
         began = time.time()
-        response = client.get(f"/v1/standard/videos/{job_id}/video", headers=headers, timeout=600.0)
-        if response.status_code != 200:
-            code, message = _error_text(response)
-            return finish(1, f"downloading the video failed: HTTP {response.status_code} {code}: {message}")
-        data = response.content
+        if private:
+            try:
+                data = sdk_job.result().video  # the sealed blob, checked against the enclave's signed receipt, then opened
+            except KunoError as exc:
+                return finish(1, f"opening the private video failed: {exc.args}")
+        else:
+            response = client.get(f"/v1/standard/videos/{job_id}/video", headers=headers, timeout=600.0)
+            if response.status_code != 200:
+                code, message = _error_text(response)
+                return finish(1, f"downloading the video failed: HTTP {response.status_code} {code}: {message}")
+            data = response.content
         record["download_s"] = round(time.time() - began, 2)
         digest = sha256_hex(data)
         record["video"] = {"file": f"{profile.id}.mp4", "bytes": len(data), "sha256": digest, "matches_receipt": digest == receipt.get("content_digest")}
@@ -599,6 +633,9 @@ def main() -> int:
     run.add_argument("--timeout", type=float, default=1800.0)
     run.add_argument("--poll", type=float, default=2.0)
     run.add_argument("--submit-retry-s", type=float, default=120.0)
+    run.add_argument("--country", default="", help="sent as x-kuno-country; the dev gateway honours it")
+    run.add_argument("--privacy", choices=["standard", "private"], default="standard",
+                     help="private goes through the kunoworld SDK (on PYTHONPATH): sealed to the attested enclave")
 
     check = sub.add_parser("check-video")
     check.add_argument("--job", required=True)

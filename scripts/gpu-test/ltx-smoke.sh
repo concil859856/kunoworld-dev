@@ -4,6 +4,7 @@
 #
 #   HF_TOKEN=... GITHUB_TOKEN=... ./ltx-smoke.sh      the real model (KUNO_BACKEND=real) on this machine's GPU
 #   KUNO_SMOKE_MOCK=1 ./ltx-smoke.sh                  dry run without a GPU: local images, KUNO_BACKEND=mock
+#   KUNO_SMOKE_FAMILY=h3 GITHUB_TOKEN=... ./ltx-smoke.sh   MiniMax H3 instead: 4 GPUs, SGLang, the ungated FL2VA weights
 #
 # Everything runs in containers on 127.0.0.1 and nothing touches a chain: kuno-devkit init (mock-worker image), a dev
 # gateway on SQLite (gateway image), then for each profile in turn kuno-plan, one worker container with the simulated
@@ -18,9 +19,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MOCK="${KUNO_SMOKE_MOCK:-0}"
 case "$MOCK" in 0 | 1) ;; *) echo "ltx-smoke: KUNO_SMOKE_MOCK must be 0 or 1" >&2 && exit 2 ;; esac
+FAMILY="${KUNO_SMOKE_FAMILY:-ltx}"
+case "$FAMILY" in ltx | h3) ;; *) echo "ltx-smoke: KUNO_SMOKE_FAMILY must be ltx or h3" >&2 && exit 2 ;; esac
+if [ "$FAMILY" = h3 ]; then MOUNT=/models/h3; else MOUNT=/models/ltx-2.5; fi
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BASE="${KUNO_SMOKE_DIR:-$PWD/kuno-smoke}"
-MODELS="${KUNO_SMOKE_MODELS_DIR:-$BASE/models/ltx-2.5}"
+MODELS="${KUNO_SMOKE_MODELS_DIR:-$BASE/models/${MOUNT#/models/}}"
 RUN_DIR="$BASE/runs/$STAMP"
 DATA="$RUN_DIR/data"
 RESULTS="$RUN_DIR/results"
@@ -35,12 +39,13 @@ PREFIX="kuno-smoke-$STAMP"
 
 REGISTRY="${KUNO_SMOKE_REGISTRY:-ghcr.io/concil859856}"
 if [ "$MOCK" = 1 ]; then
-  WORKER_IMAGE="${KUNO_SMOKE_WORKER_IMAGE:-kuno-worker:ltx}"
+  WORKER_IMAGE="${KUNO_SMOKE_WORKER_IMAGE:-kuno-worker:$FAMILY}"
   GATEWAY_IMAGE="${KUNO_SMOKE_GATEWAY_IMAGE:-kunoworld/gateway:local}"
   DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-kunoworld/mock-worker:local}"
   BACKEND="${KUNO_SMOKE_BACKEND:-mock}"
 else
-  WORKER_IMAGE="${KUNO_SMOKE_WORKER_IMAGE:-$REGISTRY/kunoworld-worker:${KUNO_SMOKE_WORKER_TAG:-ltx-0.1.0-bc6e7797c53d}}"
+  if [ "$FAMILY" = h3 ]; then WORKER_TAG_DEFAULT=h3-0.1.0-7ab72991d08a; else WORKER_TAG_DEFAULT=ltx-0.1.0-bc6e7797c53d; fi
+  WORKER_IMAGE="${KUNO_SMOKE_WORKER_IMAGE:-$REGISTRY/kunoworld-worker:${KUNO_SMOKE_WORKER_TAG:-$WORKER_TAG_DEFAULT}}"
   GATEWAY_IMAGE="${KUNO_SMOKE_GATEWAY_IMAGE:-$REGISTRY/kunoworld-gateway:${KUNO_SMOKE_GATEWAY_TAG:-aa11a3ff9e34}}"
   DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-$REGISTRY/kunoworld-mock-worker:${KUNO_SMOKE_DEVKIT_TAG:-70f74725510f}}"
   # real: the resident diffusers pipelines, the only LTX runtime the image contains (README.md, "Why KUNO_BACKEND=real").
@@ -49,22 +54,45 @@ fi
 SKIP_LOGIN="${KUNO_SMOKE_SKIP_LOGIN:-$MOCK}"
 REGISTRY_HOST="${REGISTRY%%/*}"
 GHCR_USER="${KUNO_SMOKE_REGISTRY_USER:-concil859856}"
-PROFILES="${KUNO_SMOKE_PROFILES:-ltx-2.5-fast,ltx-2.5-pro}"
-DURATION="${KUNO_SMOKE_DURATION:-2}"
-RESOLUTION="${KUNO_SMOKE_RESOLUTION:-720p}"
+if [ "$FAMILY" = h3 ]; then
+  # H3 renders 5-14 s at 768p only (1344x768 for 16:9); its SGLang server loads a Hugging Face cache.
+  D_PROFILES=h3 D_DURATION=5 D_RESOLUTION=768p D_REPO=MiniMaxAI/MiniMax-H3 D_REVISION=main D_DRIVER=580 D_GPU_MIB=140000 D_GPUS=4
+else
+  D_PROFILES=ltx-2.5-fast,ltx-2.5-pro D_DURATION=2 D_RESOLUTION=720p D_REPO=Lightricks/LTX-2.5-Diffusers
+  D_REVISION=426936f8b22dc28e4def61e515478b0b7e4a53cc D_DRIVER=570 D_GPU_MIB=80000 D_GPUS=1 # LTX revision: main on 2026-09-15
+fi
+PROFILES="${KUNO_SMOKE_PROFILES:-$D_PROFILES}"
+DURATION="${KUNO_SMOKE_DURATION:-$D_DURATION}"
+RESOLUTION="${KUNO_SMOKE_RESOLUTION:-$D_RESOLUTION}"
 ASPECT="${KUNO_SMOKE_ASPECT:-16:9}"
 FPS="${KUNO_SMOKE_FPS:-24}"
 AUDIO="${KUNO_SMOKE_AUDIO:-1}"
 LTX_OFFLOAD="${KUNO_SMOKE_LTX_OFFLOAD:-auto}"
 WEIGHTS_VERIFY="${KUNO_SMOKE_WEIGHTS_VERIFY:-full}"
-HF_REPO="${KUNO_SMOKE_HF_REPO:-Lightricks/LTX-2.5-Diffusers}"
-HF_REVISION="${KUNO_SMOKE_HF_REVISION:-426936f8b22dc28e4def61e515478b0b7e4a53cc}" # main on 2026-09-15
+HF_REPO="${KUNO_SMOKE_HF_REPO:-$D_REPO}"
+HF_REVISION="${KUNO_SMOKE_HF_REVISION:-$D_REVISION}"
 DOWNLOAD_WORKERS="${KUNO_SMOKE_DOWNLOAD_WORKERS:-4}"
 REGISTER_TIMEOUT="${KUNO_SMOKE_REGISTER_TIMEOUT:-2700}"
 JOB_TIMEOUT="${KUNO_SMOKE_JOB_TIMEOUT:-1800}"
 GPU_CHECK_IMAGE="${KUNO_SMOKE_GPU_CHECK_IMAGE:-ubuntu:24.04}"
-MIN_DRIVER="${KUNO_SMOKE_MIN_DRIVER:-570}"
-MIN_GPU_MIB="${KUNO_SMOKE_MIN_GPU_MIB:-80000}"
+MIN_DRIVER="${KUNO_SMOKE_MIN_DRIVER:-$D_DRIVER}"
+MIN_GPU_MIB="${KUNO_SMOKE_MIN_GPU_MIB:-$D_GPU_MIB}"
+MIN_GPUS="${KUNO_SMOKE_MIN_GPUS:-$D_GPUS}"
+# Where the test customer is, sent as x-kuno-country (the dev gateway honours it). H3 is only served outside the
+# licence's Excluded Territories, and a request from an unknown country counts as excluded, so H3 runs need it.
+COUNTRY="${KUNO_SMOKE_COUNTRY:-}"
+COUNTRY_HEADER=()
+if [ -n "$COUNTRY" ]; then COUNTRY_HEADER=(-H "x-kuno-country: $COUNTRY"); fi
+# H3 is offered in Private mode only (no Standard price), so its job goes through the kunoworld SDK, mounted from
+# KUNO_SMOKE_SDK_DIR, ./sdk beside this script, or the repository's sdk/python/src.
+if [ "$FAMILY" = h3 ]; then D_PRIVACY=private; else D_PRIVACY=standard; fi
+PRIVACY="${KUNO_SMOKE_PRIVACY:-$D_PRIVACY}"
+SDK_DIR="${KUNO_SMOKE_SDK_DIR:-}"
+if [ -z "$SDK_DIR" ]; then
+  for candidate in "$HERE/sdk" "$HERE/../../sdk/python/src"; do
+    if [ -d "$candidate/kunoworld" ]; then SDK_DIR="$(cd "$candidate" && pwd)" && break; fi
+  done
+fi
 MIN_DISK_GB="${KUNO_SMOKE_MIN_DISK_GB:-200}"
 MIN_RAM_GB="${KUNO_SMOKE_MIN_RAM_GB:-64}"
 
@@ -106,8 +134,10 @@ gpu_args() { if [ "$MOCK" != 1 ]; then printf '%s\n' --gpus all; fi; }
 helper() {
   local image="$1"
   shift
+  local sdk=()
+  if [ -n "$SDK_DIR" ]; then sdk=(-v "$SDK_DIR:/sdk:ro" -e PYTHONPATH=/sdk); fi
   docker run --rm --label "$LABEL" --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e USER=kuno-smoke \
-    -v "$HERE/smoke.py:/smoke/smoke.py:ro" -v "$RESULTS:/out" -v "$DATA:/var/lib/kuno/data:ro" \
+    ${sdk[@]+"${sdk[@]}"} -v "$HERE/smoke.py:/smoke/smoke.py:ro" -v "$RESULTS:/out" -v "$DATA:/var/lib/kuno/data:ro" \
     --entrypoint python "$image" -W ignore /smoke/smoke.py "$@"
 }
 
@@ -153,13 +183,31 @@ check_prerequisites() {
   if [ "$MOCK" = 1 ]; then
     pre_skip tokens "the dry run uses local images and downloads no weights"
   else
-    if [ -n "${HF_TOKEN:-}" ]; then pre_ok HF_TOKEN "set"; else pre_fail HF_TOKEN "not set: export a Hugging Face read token of the account that accepted the LTX-2.5 licence"; fi
+    if [ -n "${HF_TOKEN:-}" ]; then pre_ok HF_TOKEN "set"
+    elif [ "$FAMILY" = h3 ]; then pre_ok HF_TOKEN "not needed: $HF_REPO is not gated"
+    else pre_fail HF_TOKEN "not set: export a Hugging Face read token of the account that accepted the LTX-2.5 licence"; fi
     if [ "$SKIP_LOGIN" = 1 ]; then
       pre_skip GITHUB_TOKEN "KUNO_SMOKE_SKIP_LOGIN=1"
     elif [ -n "${GITHUB_TOKEN:-}" ]; then
       pre_ok GITHUB_TOKEN "set"
     else
       pre_fail GITHUB_TOKEN "not set: export a GitHub token with read:packages for $REGISTRY"
+    fi
+  fi
+
+  if [ "$FAMILY" = h3 ]; then
+    if [ -n "$COUNTRY" ]; then
+      pre_ok country "$COUNTRY, sent as x-kuno-country"
+    else
+      pre_fail country "KUNO_SMOKE_COUNTRY is not set: H3 is served only to customers outside the US, EU, UK and Korea; set the test customer's two-letter country"
+    fi
+  fi
+
+  if [ "$PRIVACY" = private ]; then
+    if [ -n "$SDK_DIR" ]; then
+      pre_ok sdk "kunoworld SDK from $SDK_DIR (Private mode)"
+    else
+      pre_fail sdk "Private mode needs the kunoworld SDK: copy sdk/python/src/kunoworld to $HERE/sdk/ or set KUNO_SMOKE_SDK_DIR"
     fi
   fi
 
@@ -183,7 +231,12 @@ check_prerequisites() {
       if [ "$HOST_GPU_MIB" -ge "$MIN_GPU_MIB" ]; then
         pre_ok gpu-memory "$HOST_GPU_COUNT x $HOST_GPU, $HOST_GPU_MIB MiB on the largest"
       else
-        pre_fail gpu-memory "$HOST_GPU has $HOST_GPU_MIB MiB; the bf16 LTX-2.5 pipeline needs 80 GB on one GPU"
+        pre_fail gpu-memory "$HOST_GPU has $HOST_GPU_MIB MiB; $FAMILY needs $MIN_GPU_MIB MiB per GPU"
+      fi
+      if [ "$HOST_GPU_COUNT" -ge "$MIN_GPUS" ]; then
+        pre_ok gpu-count "$HOST_GPU_COUNT (needs $MIN_GPUS)"
+      else
+        pre_fail gpu-count "$HOST_GPU_COUNT GPU(s); $FAMILY needs $MIN_GPUS in one worker"
       fi
     fi
   fi
@@ -264,7 +317,7 @@ begin_run() {
   state image.gateway "$GATEWAY_IMAGE"
   state image.devkit "$DEVKIT_IMAGE"
   local key
-  for key in DURATION RESOLUTION ASPECT FPS AUDIO LTX_OFFLOAD WEIGHTS_VERIFY HF_REPO HF_REVISION GATEWAY_URL MODELS DATA; do
+  for key in FAMILY COUNTRY PRIVACY DURATION RESOLUTION ASPECT FPS AUDIO LTX_OFFLOAD WEIGHTS_VERIFY HF_REPO HF_REVISION GATEWAY_URL MODELS DATA; do
     state "setting.$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')" "${!key}"
   done
   state host.kernel "$(uname -r)"
@@ -407,6 +460,29 @@ pull_images() {
   done
 }
 
+# H3: the SGLang servers resolve MiniMaxAI/MiniMax-H3 in a Hugging Face cache (HF_HUB_CACHE=/models/h3, offline), so this
+# writes that layout for the checkpoint variant each profile uses: FL2VA for h3 and h3-turbo, Ref2VA for h3-reference.
+fetch_h3_weights() {
+  local started code=0 patterns='"*.json","LICENSE","README.md"'
+  started="$(now)"
+  case ",$PROFILES," in *,h3,* | *,h3-turbo,*) patterns+=',"FL2VA/*"' ;; esac
+  case ",$PROFILES," in *,h3-reference,*) patterns+=',"Ref2VA/*"' ;; esac
+  docker run --rm --label "$LABEL" --name "$PREFIX-weights" --user "$(id -u):$(id -g)" \
+    -e HF_TOKEN -e HF_HUB_OFFLINE=0 -e HF_HUB_DISABLE_TELEMETRY=1 -e HF_HUB_DISABLE_PROGRESS_BARS=1 \
+    -e HF_XET_HIGH_PERFORMANCE=1 -e HOME=/tmp -v "$MODELS:$MOUNT" -v "$RESULTS:/out" --entrypoint python "$WORKER_IMAGE" -W ignore -c "
+import json, time
+from huggingface_hub import snapshot_download
+started = time.time()
+path = snapshot_download('$HF_REPO', revision='$HF_REVISION', cache_dir='$MOUNT', allow_patterns=[$patterns], max_workers=$DOWNLOAD_WORKERS)
+print('snapshot', path)
+json.dump({'repo': '$HF_REPO', 'revision_requested': '$HF_REVISION', 'revision': path.rstrip('/').rsplit('/', 1)[-1],
+           'allow_patterns': [$patterns], 'seconds': round(time.time() - started, 1)}, open('/out/weights.json', 'w'), indent=2)
+" 2>&1 | tee "$LOGS/weights.log" || code=$?
+  if [ "$code" != 0 ]; then die "downloading the H3 weights failed (exit $code; see logs/weights.log). Run again to resume"; fi
+  state timing.weights_download_s "$(since "$started")"
+  ok "weights ready: $(du -sh "$MODELS" | cut -f1) in $(since "$started")s"
+}
+
 fetch_weights() {
   say "weights: $HF_REPO@${HF_REVISION:0:12} into $MODELS"
   if [ "$MOCK" = 1 ]; then
@@ -418,12 +494,16 @@ fetch_weights() {
   local started code=0
   started="$(now)"
   # huggingface_hub from the worker image itself, so the host needs no Python. HF_TOKEN is passed by name only.
+  if [ "$FAMILY" = h3 ]; then
+    fetch_h3_weights
+    return
+  fi
   docker run --rm --label "$LABEL" --name "$PREFIX-weights" --user "$(id -u):$(id -g)" \
     -e HF_TOKEN -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 -e HF_HUB_DISABLE_TELEMETRY=1 \
     -e HF_HUB_DISABLE_PROGRESS_BARS=1 -e HF_XET_HIGH_PERFORMANCE=1 -e HOME=/tmp \
-    -v "$MODELS:/models/ltx-2.5" -v "$HERE/smoke.py:/smoke/smoke.py:ro" -v "$RESULTS:/out" \
+    -v "$MODELS:$MOUNT" -v "$HERE/smoke.py:/smoke/smoke.py:ro" -v "$RESULTS:/out" \
     --entrypoint python "$WORKER_IMAGE" -W ignore /smoke/smoke.py fetch-weights \
-    --repo "$HF_REPO" --revision "$HF_REVISION" --profiles "$PROFILES" --dest /models/ltx-2.5 \
+    --repo "$HF_REPO" --revision "$HF_REVISION" --profiles "$PROFILES" --dest "$MOUNT" \
     --summary /out/weights.json --workers "$DOWNLOAD_WORKERS" 2>&1 | tee "$LOGS/weights.log" || code=$?
   if [ "$code" != 0 ]; then
     case "$code" in
@@ -454,7 +534,7 @@ start_gateway() {
   local started deadline
   started="$(now)"
   docker run -d --label "$LABEL" --name "$PREFIX-gateway" --network host \
-    -e KUNO_DATA_DIR=/var/lib/kuno/data -e KUNO_PORT="$PORT" -v "$DATA:/var/lib/kuno/data" \
+    -e KUNO_DATA_DIR=/var/lib/kuno/data -e KUNO_PORT="$PORT" -e KUNO_ALLOW_COUNTRY_OVERRIDE=1 -v "$DATA:/var/lib/kuno/data" \
     "$GATEWAY_IMAGE" kuno-gateway --host 127.0.0.1 --port "$PORT" >/dev/null
   deadline=$(($(date +%s) + 180))
   until curl -fsS -o /dev/null "$GATEWAY_URL/healthz" 2>/dev/null; do
@@ -492,35 +572,49 @@ run_preflight() {
 
 run_profile() {
   local p="$1"
-  local pre="profile.$p" name="$PREFIX-worker-$p" audio_flag=() code started registered
+  local pre="profile.$p" name="$PREFIX-worker-$p" audio_flag=() code started registered gpus
   say "$p"
   if [ "$AUDIO" != 1 ]; then audio_flag=(--no-audio); fi
 
   code=0
   docker run --rm --label "$LABEL" --entrypoint kuno-plan "$WORKER_IMAGE" "$p" text_to_video \
-    --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --models-dir /models/ltx-2.5 \
+    --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --models-dir "$MOUNT" \
     ${audio_flag[@]+"${audio_flag[@]}"} >"$RESULTS/plan-$p.txt" 2>"$LOGS/plan-$p.stderr" || code=$?
   state "$pre.plan_exit" "$code"
   if [ "$code" = 0 ]; then ok "kuno-plan: $(head -n 1 "$RESULTS/plan-$p.txt")"; else warn "kuno-plan exited $code (plan-$p.txt)"; fi
 
   code=0
+  if [ "$FAMILY" = h3 ]; then
+    info "resident-call check skipped: it inspects LTX2Pipeline, and H3 runs in SGLang"
+  else
   helper "$WORKER_IMAGE" resident-call --profile "$p" --duration "$DURATION" --resolution "$RESOLUTION" \
     --aspect "$ASPECT" --fps "$FPS" --audio "$AUDIO" --out "/out/resident-call-$p.json" 2>"$LOGS/resident-call-$p.stderr" || code=$?
   case "$code" in
     0 | 10) ;;
     *) warn "the resident-call check itself failed (exit $code; logs/resident-call-$p.stderr)" ;;
   esac
+  fi
 
   local worker=(
     -d --label "$LABEL" --name "$name" --network host
-    -v "$DATA:/var/lib/kuno/data:ro" -v "$MODELS:/models/ltx-2.5:ro"
+    -v "$DATA:/var/lib/kuno/data:ro" -v "$MODELS:$MOUNT:ro"
     -e KUNO_DATA_DIR=/var/lib/kuno/data -e KUNO_GATEWAY_URL="$GATEWAY_URL"
     -e KUNO_TEE=mock -e KUNO_BACKEND="$BACKEND" -e KUNO_PROFILES="$p"
-    -e KUNO_LTX_MODELS_DIR=/models/ltx-2.5 -e KUNO_WEIGHTS_ALLOW_UNPINNED=1
-    -e KUNO_WEIGHTS_VERIFY="$WEIGHTS_VERIFY" -e KUNO_LTX_OFFLOAD="$LTX_OFFLOAD"
+    -e KUNO_WEIGHTS_ALLOW_UNPINNED=1 -e KUNO_WEIGHTS_VERIFY="$WEIGHTS_VERIFY"
     -e KUNO_MOCK_QUOTE_KEY_FILE=/var/lib/kuno/data/mock_quote.key -e KUNO_PROVENANCE=off
   )
-  if [ "$MOCK" != 1 ]; then worker+=(--gpus all -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility"); fi
+  if [ "$FAMILY" = h3 ]; then
+    # One worker on four GPUs (Ulysses 4); NCCL needs the host's shared memory. SGLang's log is kept on a dev box.
+    worker+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$MIN_GPUS" -e KUNO_SGLANG_LOG=inherit)
+    gpus="$(seq -s, 0 $((MIN_GPUS - 1)))"
+  else
+    worker+=(-e KUNO_LTX_MODELS_DIR="$MOUNT" -e KUNO_LTX_OFFLOAD="$LTX_OFFLOAD")
+    gpus=all
+  fi
+  if [ "$MOCK" != 1 ]; then
+    if [ "$gpus" = all ]; then worker+=(--gpus all); else worker+=(--gpus "\"device=$gpus\""); fi
+    worker+=(-e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
+  fi
   if [ -n "${KUNO_MODEL_DIGEST:-}" ]; then worker+=(-e KUNO_MODEL_DIGEST); fi
 
   started="$(now)"
@@ -537,7 +631,7 @@ run_profile() {
   last_note=$(date +%s)
   registered=0
   while :; do
-    body="$(curl -fsS "$GATEWAY_URL/v1/route?mode=text_to_video&profile_id=$p&privacy=standard" 2>/dev/null || true)"
+    body="$(curl -fsS ${COUNTRY_HEADER[@]+"${COUNTRY_HEADER[@]}"} "$GATEWAY_URL/v1/route?mode=text_to_video&profile_id=$p&privacy=$PRIVACY" 2>/dev/null || true)"
     case "$body" in *"\"profile_id\":\"$p\""*) case "$body" in *'"enclaves":[{'*) registered=1 ;; esac ;; esac
     if [ "$registered" = 1 ]; then break; fi
     if ! container_running "$name"; then
@@ -567,7 +661,7 @@ run_profile() {
     code=0
     helper "$GATEWAY_IMAGE" run-job --gateway "$GATEWAY_URL" --data /var/lib/kuno/data --profile "$p" \
       --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --audio "$AUDIO" \
-      --out /out/jobs --timeout "$JOB_TIMEOUT" 2>&1 | tee "$LOGS/job-$p.log" || code=$?
+      --country "$COUNTRY" --privacy "$PRIVACY" --out /out/jobs --timeout "$JOB_TIMEOUT" 2>&1 | tee "$LOGS/job-$p.log" || code=$?
     if [ "$code" != 0 ]; then
       state "$pre.error" "the job did not produce a video (see logs/job-$p.log and logs/worker-$p.log)"
     elif ! ffprobe -v error -print_format json -show_format -show_streams "$JOBS/$p.mp4" >"$JOBS/$p.ffprobe.json" 2>"$LOGS/ffprobe-$p.log"; then
