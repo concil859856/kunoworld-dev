@@ -1,12 +1,13 @@
-# LTX-2.5 smoke test on a rented GPU
+# GPU smoke test: LTX-2.5 and MiniMax H3 on a rented server
 
-`ltx-smoke.sh` runs KunoWorld's real LTX-2.5 worker image on one GPU server and proves one video per profile comes
-out end to end:
+`ltx-smoke.sh` runs KunoWorld's real worker images on one rented GPU server and proves one video per profile comes
+out end to end. LTX-2.5 by default; MiniMax H3 with `KUNO_SMOKE_FAMILY=h3` ([below](#minimax-h3)):
 
 1. It checks the machine.
 2. It pulls the images and downloads only the weights the profiles load.
 3. It starts a dev gateway and a worker with the simulated TEE (`KUNO_TEE=mock`), all on 127.0.0.1.
-4. For each profile, it submits a Standard-mode job with the dev API key, downloads the MP4 and checks it with ffprobe.
+4. For each profile, it submits a job with the dev API key — Standard mode, or Private through the SDK for H3 —
+   downloads the MP4 and checks it with ffprobe.
 5. It writes timings, peak GPU memory and host RAM, a results JSON and every log into one tarball.
 
 Nothing touches a chain, and nothing listens beyond 127.0.0.1.
@@ -25,12 +26,17 @@ Nothing touches a chain, and nothing listens beyond 127.0.0.1.
 | Disk | ≥ 200 GB free where the weights go | `df` on `KUNO_SMOKE_DIR` (weights already there count) |
 | Packages | `curl`, `ffprobe` (`apt-get install -y ffmpeg`) | `command -v` |
 
+**For H3** (`KUNO_SMOKE_FAMILY=h3`): 4 GPUs of at least 141 GB in one machine (an 8-GPU H200 box is what we used),
+driver R580 or newer, about 150 GB of disk for the `FL2VA` weights (`Ref2VA` adds about 61 GB), and a country the
+MiniMax H3 licence allows — not the US, EU, UK or South Korea, testing included.
+
 No TDX or confidential-computing mode is needed.
 
 ## Run it
 
 Set two environment variables:
 - `HF_TOKEN`: a Hugging Face read token for the account that accepted the LTX-2.5 licence (the repo is gated).
+  H3's weights are not gated, so an H3 run needs no token.
 - `GITHUB_TOKEN`: a GitHub token with `read:packages` for the private `ghcr.io/concil859856` images.
 
 ```bash
@@ -104,6 +110,41 @@ lists what was fetched and what was not.
 Files land in `KUNO_SMOKE_DIR/models/ltx-2.5`, which is mounted read-only into the worker at `/models/ltx-2.5`. Re-running
 resumes partial files and skips complete ones.
 
+## MiniMax H3
+
+```bash
+KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP GITHUB_TOKEN=ghp_... ~/gpu-test/ltx-smoke.sh
+# reference-to-video as well:
+KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_PROFILES=h3-reference \
+  KUNO_SMOKE_REFERENCE_IMAGE=~/ref/fox.png KUNO_SMOKE_PROMPT='The fox from the reference image in an autumn forest' \
+  ~/gpu-test/ltx-smoke.sh
+```
+
+What differs from LTX:
+
+- **One worker on 4 GPUs.** The container gets `--gpus "device=0,1,2,3"` and `--ipc host` (NCCL shared memory), and
+  SGLang serves the model at `KUNO_H3_NUM_GPUS=4`. Its log is kept (`KUNO_SGLANG_LOG=inherit`). Loading takes about
+  160 s before the worker registers.
+- **Private-mode jobs.** H3 has no Standard price, so the job is submitted with the `kunoworld` SDK, which seals it to
+  the attested enclave and opens the video after checking the receipt. The SDK is mounted from `KUNO_SMOKE_SDK_DIR`,
+  `./sdk/kunoworld` beside this script, or the repository's `sdk/python/src`.
+- **A country is required.** `KUNO_SMOKE_COUNTRY` is sent as `x-kuno-country` on the job (the dev gateway runs with
+  `KUNO_ALLOW_COUNTRY_OVERRIDE=1`) and as `KUNO_MINER_COUNTRY` to the worker: the gateway serves H3 only to customers
+  outside the licence's excluded territories, and refuses to register a worker running inside them.
+- **Weights** are a Hugging Face cache at `/models/h3` (`HF_HUB_CACHE`), not a diffusers directory: `FL2VA/` for `h3`
+  and `h3-turbo`, `Ref2VA/` for `h3-reference`, plus the repo's root JSON. It is not gated, so `HF_TOKEN` is optional.
+- **No resident-call check.** That check inspects diffusers' `LTX2Pipeline`; H3 runs in SGLang.
+
+Measured on 2026-09-15, 4 of 8 H200 141 GB (Tokyo), image `h3-0.1.0-0ad70874cd6b` plus ffmpeg and CUDA `lib64` fixes:
+
+| | `h3` | `h3-reference` |
+|---|---|---|
+| Worker start to registered | 163 s | 163 s |
+| Submit to finished video | 82 s | 133 s |
+| Output | 1344x768, 124 frames, 5.17 s, H.264 + 32 kHz AAC | same |
+| Peak GPU memory (per GPU) | 95 GB | 97 GB |
+| Weights download | 144 GB in 198 s | +61 GB in 90 s |
+
 ## Output
 
 Everything for one run is under `KUNO_SMOKE_DIR/runs/<UTC timestamp>/`:
@@ -157,20 +198,26 @@ All optional.
 |---|---|---|
 | `KUNO_SMOKE_DIR` | `./kuno-smoke` | Weights, runs and tarballs |
 | `KUNO_SMOKE_MODELS_DIR` | `$KUNO_SMOKE_DIR/models/ltx-2.5` | Where the weights are kept |
-| `KUNO_SMOKE_PROFILES` | `ltx-2.5-fast,ltx-2.5-pro` | Profiles to test, in order; one worker container each |
-| `KUNO_SMOKE_DURATION`, `_RESOLUTION`, `_ASPECT`, `_FPS`, `_AUDIO` | `2`, `720p`, `16:9`, `24`, `1` | The test job |
+| `KUNO_SMOKE_FAMILY` | `ltx` | `ltx` or `h3`; picks the defaults marked "H3:" below |
+| `KUNO_SMOKE_PROFILES` | `ltx-2.5-fast,ltx-2.5-pro` (H3: `h3`) | Profiles to test, in order; one worker container each |
+| `KUNO_SMOKE_COUNTRY` | unset (H3: required) | The test customer's country, sent as `x-kuno-country`, and the worker's `KUNO_MINER_COUNTRY` |
+| `KUNO_SMOKE_PRIVACY` | `standard` (H3: `private`) | Private jobs go through the SDK, sealed to the enclave |
+| `KUNO_SMOKE_SDK_DIR` | `./sdk` or the repo's `sdk/python/src` | The `kunoworld` SDK mounted into the job helper |
+| `KUNO_SMOKE_REFERENCE_IMAGE`, `KUNO_SMOKE_PROMPT` | unset | A reference image (needed by `h3-reference`) and a prompt to replace the built-in one |
+| `KUNO_SMOKE_DURATION`, `_RESOLUTION`, `_ASPECT`, `_FPS`, `_AUDIO` | `2`, `720p`, `16:9`, `24`, `1` (H3: `5`, `768p`) | The test job |
 | `KUNO_SMOKE_LTX_OFFLOAD` | `auto` | `KUNO_LTX_OFFLOAD` for the worker: `auto`, `none`, `model` or `group` |
 | `KUNO_SMOKE_WEIGHTS_VERIFY` | `full` | `KUNO_WEIGHTS_VERIFY` (`size` needs `KUNO_MODEL_DIGEST`) |
 | `KUNO_MODEL_DIGEST` | unset | Passed to the worker when set |
 | `KUNO_SMOKE_REGISTRY` | `ghcr.io/concil859856` | Image registry and namespace |
-| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-bc6e7797c53d`, `aa11a3ff9e34`, `70f74725510f` | Image tags |
+| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-0ad70874cd6b`, `aa11a3ff9e34`, `70f74725510f` | Image tags |
 | `KUNO_SMOKE_WORKER_IMAGE`, `_GATEWAY_IMAGE`, `_DEVKIT_IMAGE` | built from the two rows above | Whole image references, e.g. `…@sha256:…` |
 | `KUNO_SMOKE_SKIP_LOGIN`, `KUNO_SMOKE_REGISTRY_USER` | `0`, `concil859856` | Skip `docker login` (public images); the login user name |
-| `KUNO_SMOKE_HF_REPO`, `KUNO_SMOKE_HF_REVISION` | `Lightricks/LTX-2.5-Diffusers`, `426936f8b22d…` | Weights source |
+| `KUNO_SMOKE_PULL` | `always` | `missing`: use an image already on this machine (e.g. one built there) and pull the rest |
+| `KUNO_SMOKE_HF_REPO`, `KUNO_SMOKE_HF_REVISION` | `Lightricks/LTX-2.5-Diffusers`, `426936f8b22d…` (H3: `MiniMaxAI/MiniMax-H3`, `main`) | Weights source |
 | `KUNO_SMOKE_DOWNLOAD_WORKERS` | `4` | Files downloaded in parallel |
 | `KUNO_SMOKE_PORT` | `18180` | Gateway port on 127.0.0.1 |
 | `KUNO_SMOKE_REGISTER_TIMEOUT`, `KUNO_SMOKE_JOB_TIMEOUT` | `2700`, `1800` | Seconds |
-| `KUNO_SMOKE_MIN_DRIVER`, `_MIN_GPU_MIB`, `_MIN_DISK_GB`, `_MIN_RAM_GB` | `570`, `80000`, `200`, `64` | Prerequisite thresholds |
+| `KUNO_SMOKE_MIN_DRIVER`, `_MIN_GPU_MIB`, `_MIN_DISK_GB`, `_MIN_RAM_GB`, `_MIN_GPUS` | `570`, `80000`, `200`, `64`, `1` (H3: `580`, `140000`, `4` GPUs) | Prerequisite thresholds |
 | `KUNO_SMOKE_MOCK` | `0` | `1`: the dry run below |
 
 ## Dry run without a GPU
@@ -235,7 +282,7 @@ packages. To use another registry, set `KUNO_SMOKE_REGISTRY` and the tags.
 - **`worker loop exited unexpectedly (a backend failed to warm up?)`:** loading failed; the traceback is above that line.
 
 **The job fails with `TypeError: … unexpected keyword argument 'second_stage_sigmas'`.** The worker image predates
-`ltx-0.1.0-bc6e7797c53d`. Older images passed `second_stage_sigmas` straight to diffusers 0.40's `LTX2Pipeline`, which has no
+`ltx-0.1.0-0ad70874cd6b`. Older images passed `second_stage_sigmas` straight to diffusers 0.40's `LTX2Pipeline`, which has no
 such parameter; from that tag on, the worker runs the two stages itself through the latent upsampler. Use the default tag.
 
 **`127.0.0.1:18180 is in use`.** Set `KUNO_SMOKE_PORT`.
