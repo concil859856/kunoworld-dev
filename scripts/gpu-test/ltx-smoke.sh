@@ -40,8 +40,8 @@ if [ "$MOCK" = 1 ]; then
   DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-kunoworld/mock-worker:local}"
   BACKEND="${KUNO_SMOKE_BACKEND:-mock}"
 else
-  WORKER_IMAGE="${KUNO_SMOKE_WORKER_IMAGE:-$REGISTRY/kunoworld-worker:${KUNO_SMOKE_WORKER_TAG:-ltx-0.1.0-246910fe4203}}"
-  GATEWAY_IMAGE="${KUNO_SMOKE_GATEWAY_IMAGE:-$REGISTRY/kunoworld-gateway:${KUNO_SMOKE_GATEWAY_TAG:-70f74725510f}}"
+  WORKER_IMAGE="${KUNO_SMOKE_WORKER_IMAGE:-$REGISTRY/kunoworld-worker:${KUNO_SMOKE_WORKER_TAG:-ltx-0.1.0-bc6e7797c53d}}"
+  GATEWAY_IMAGE="${KUNO_SMOKE_GATEWAY_IMAGE:-$REGISTRY/kunoworld-gateway:${KUNO_SMOKE_GATEWAY_TAG:-aa11a3ff9e34}}"
   DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-$REGISTRY/kunoworld-mock-worker:${KUNO_SMOKE_DEVKIT_TAG:-70f74725510f}}"
   # real: the resident diffusers pipelines, the only LTX runtime the image contains (README.md, "Why KUNO_BACKEND=real").
   BACKEND="${KUNO_SMOKE_BACKEND:-real}"
@@ -106,7 +106,7 @@ gpu_args() { if [ "$MOCK" != 1 ]; then printf '%s\n' --gpus all; fi; }
 helper() {
   local image="$1"
   shift
-  docker run --rm --label "$LABEL" --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  docker run --rm --label "$LABEL" --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e USER=kuno-smoke \
     -v "$HERE/smoke.py:/smoke/smoke.py:ro" -v "$RESULTS:/out" -v "$DATA:/var/lib/kuno/data:ro" \
     --entrypoint python "$image" -W ignore /smoke/smoke.py "$@"
 }

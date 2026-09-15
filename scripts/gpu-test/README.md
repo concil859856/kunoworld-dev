@@ -56,13 +56,14 @@ The tokens are never echoed or written to disk:
 |---|---|---|
 | Prerequisites | < 1 min | |
 | Image pull: worker 6.6 GB compressed, gateway and mock-worker < 0.5 GB | 2–10 min | about 25 GB under Docker's root |
-| Weights, both profiles (resumable) | 10–40 min at 1–10 Gbit/s | 119 GB; `ltx-2.5-fast` alone 81 GB |
-| Per profile: worker start → registered (hash 81 GB of weights, load to GPU) | 3–8 min | |
-| Per profile: one 2 s 720p job | fast < 1 min; pro 1–3 min (30 steps with guidance) | < 10 MB |
-| **First run** | **about 45–75 min** | **about 150 GB** |
-| Re-run (images and weights present) | about 15–25 min | |
+| Weights, both profiles (resumable) | 6 min at about 330 MB/s on the test host; 10–40 min at 1–10 Gbit/s | 120 GB; `ltx-2.5-fast` alone 82 GB |
+| Per profile: worker start → registered (hash the weights, load to GPU) | about 70 s with the weights in page cache; longer from a cold disk | |
+| Per profile: one 2 s 720p job | fast: 6.4 s of generation; pro: 103 s (30 steps, then 3 at full size) | < 2 MB |
+| **First run** | **about 20–60 min**, mostly the download | **about 150 GB** |
+| Re-run (images and weights present) | about 8 min | |
 
-These are estimates. Nothing here has run on a GPU yet, and `results.json` records the real numbers.
+Measured on 2026-09-15 on a MassedCompute RTX PRO 6000 Blackwell Server Edition (96 GB, driver 580, 141 GB RAM): peak GPU
+memory 87–88 GB with `KUNO_LTX_OFFLOAD=auto` (no offload), peak host RAM 7.4 GB. `results.json` records each run's numbers.
 
 ## Why `KUNO_BACKEND=real`
 
@@ -162,7 +163,7 @@ All optional.
 | `KUNO_SMOKE_WEIGHTS_VERIFY` | `full` | `KUNO_WEIGHTS_VERIFY` (`size` needs `KUNO_MODEL_DIGEST`) |
 | `KUNO_MODEL_DIGEST` | unset | Passed to the worker when set |
 | `KUNO_SMOKE_REGISTRY` | `ghcr.io/concil859856` | Image registry and namespace |
-| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-246910fe4203`, `70f74725510f`, `70f74725510f` | Image tags |
+| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-bc6e7797c53d`, `aa11a3ff9e34`, `70f74725510f` | Image tags |
 | `KUNO_SMOKE_WORKER_IMAGE`, `_GATEWAY_IMAGE`, `_DEVKIT_IMAGE` | built from the two rows above | Whole image references, e.g. `…@sha256:…` |
 | `KUNO_SMOKE_SKIP_LOGIN`, `KUNO_SMOKE_REGISTRY_USER` | `0`, `concil859856` | Skip `docker login` (public images); the login user name |
 | `KUNO_SMOKE_HF_REPO`, `KUNO_SMOKE_HF_REVISION` | `Lightricks/LTX-2.5-Diffusers`, `426936f8b22d…` | Weights source |
@@ -234,7 +235,7 @@ packages. To use another registry, set `KUNO_SMOKE_REGISTRY` and the tags.
 - **`worker loop exited unexpectedly (a backend failed to warm up?)`:** loading failed; the traceback is above that line.
 
 **The job fails with `TypeError: … unexpected keyword argument 'second_stage_sigmas'`.** The worker image predates
-`ltx-0.1.0-246910fe4203`. Older images passed `second_stage_sigmas` straight to diffusers 0.40's `LTX2Pipeline`, which has no
+`ltx-0.1.0-bc6e7797c53d`. Older images passed `second_stage_sigmas` straight to diffusers 0.40's `LTX2Pipeline`, which has no
 such parameter; from that tag on, the worker runs the two stages itself through the latent upsampler. Use the default tag.
 
 **`127.0.0.1:18180 is in use`.** Set `KUNO_SMOKE_PORT`.
