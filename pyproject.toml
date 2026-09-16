@@ -36,7 +36,7 @@ dev = [
     "moto[s3]>=5",
     "kuno-worker",
     "kuno-validator",
-    "kunoworld",
+    "kunoworld[mcp]",
 ]
 
 [tool.pytest.ini_options]
