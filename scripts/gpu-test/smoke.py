@@ -498,6 +498,92 @@ def _iso(epoch: str | None) -> str | None:
     return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="seconds") if isinstance(value, float) else None
 
 
+def _machine_results(root: Path, state: dict, failures: list, peaks, task: str) -> int:
+    """results.json for the tasks that render nothing through the gateway: kuno-bench and the determinism check.
+
+    Same envelope as a smoke run (host, images, settings, peaks), with a per-profile block that says what the task
+    actually produced: measured cells for bench, matching trajectories for determinism.
+    """
+    profiles = [p for p in state.get("profiles", "").split(",") if p]
+    detail: dict = {}
+    if task == "bench":
+        document = load_json(root / "bench.json") or {}
+        measured = {p["profile"]: p for p in document.get("profiles", [])}
+        window = (_number(state.get("bench.start_epoch")), _number(state.get("bench.stop_epoch")))
+        for pid in profiles:
+            record = measured.get(pid) or {}
+            cells = [c for c in record.get("cells", []) if c["outcome"] == "ok"]
+            detail[pid] = {
+                "result": "pass" if record.get("status") == "ok" and cells else "fail",
+                "error": record.get("detail") or (None if record else "kuno-bench never reached this profile"),
+                "status": record.get("status"),
+                "cells_measured": len(cells),
+                "cells_total": len(record.get("cells", [])),
+                "load": record.get("load"),
+                "verified_mode": record.get("verified_mode"),
+                "gpu_seconds_per_output_second": {
+                    f"{c['resolution']} {c['fps']}fps {c['duration_s']:g}s": c["gpu_seconds_per_output_second"] for c in cells
+                },
+                "peaks": peaks(*window),
+            }
+    else:
+        for pid in profiles:
+            pre = f"verified.{pid}."
+            run = load_json(root / f"verified-{pid}-a.json") or {}
+            runs = run.get("runs") or []
+            detail[pid] = {
+                "result": "pass" if state.get(pre + "identical") == "yes" else "fail",
+                "error": state.get(pre + "error"),
+                "hardware_class": run.get("hardware_class") or state.get("setting.hardware_class"),
+                "comparison": run.get("comparison"),
+                "cases": len(run.get("cases") or []),
+                "leaves_per_case": [len(r.get("leaves") or []) for r in runs],
+                "model_digest": next((r.get("model_digest") for r in runs if r.get("model_digest")), None),
+                "files": [state.get(pre + "a"), state.get(pre + "b")],
+                "peaks": peaks(_number(state.get(pre + "start_epoch")), _number(state.get(pre + "stop_epoch"))),
+            }
+    passed = bool(detail) and all(d["result"] == "pass" for d in detail.values()) and not failures
+    started, finished = _number(state.get("started_epoch")), _number(state.get("finished_epoch"))
+    results = {
+        "result": "pass" if passed else "fail",
+        "task": task,
+        "mode": state.get("mode"),
+        "backend": state.get("backend"),
+        "model_exercised": state.get("mode") == "gpu",
+        "started_at": _iso(state.get("started_epoch")),
+        "finished_at": _iso(state.get("finished_epoch")),
+        "total_s": round(finished - started, 1) if isinstance(started, float) and isinstance(finished, float) else None,
+        "profiles_tested": profiles,
+        "failures": failures,
+        "timings_s": {k[len("timing."):]: _number(v) for k, v in state.items() if k.startswith("timing.")},
+        "profiles": detail,
+        "peaks_whole_run": peaks(),
+        "host": {k[len("host."):]: v for k, v in state.items() if k.startswith("host.")},
+        "images": {k[len("image."):]: v for k, v in state.items() if k.startswith("image.")},
+        "settings": {k[len("setting."):]: v for k, v in state.items() if k.startswith("setting.")},
+        "prerequisites": {k[len("check."):]: v for k, v in state.items() if k.startswith("check.")},
+        "weights": load_json(root / "weights.json"),
+    }
+    write_json(root / "results.json", results)
+
+    for pid, d in detail.items():
+        gpu = d["peaks"]["gpu_mem_used_mib_peak"]
+        memory = f"peak GPU {'n/a' if gpu is None else f'{gpu:.0f} MiB'}"
+        if task == "bench":
+            load = (d.get("load") or {}).get("cold_s")
+            what = f"{d['cells_measured']} of {d['cells_total']} cells measured" + (f", cold load {load}s" if load else "")
+        else:
+            leaves = d["leaves_per_case"]
+            what = (f"{d['cases']} cases x {leaves[0] if leaves else 0} leaves "
+                    f"{'identical' if d['result'] == 'pass' else 'NOT identical'} in two processes on {d['hardware_class']}")
+        print(f"{'PASS' if d['result'] == 'pass' else 'FAIL'}  {pid}: {what}, {memory}"
+              + (f"\n      error: {d['error']}" if d["error"] and d["result"] != "pass" else ""))
+    for failure in failures:
+        print(f"FAIL  {failure}")
+    print(f"RESULT: {'PASS' if passed else 'FAIL'}")
+    return 0 if passed else 1
+
+
 def cmd_results(args) -> int:
     root = Path(args.dir)
     state: dict[str, str] = {}
@@ -531,6 +617,10 @@ def cmd_results(args) -> int:
             "host_ram_used_gib_peak": round(max(ram) / 2**20, 2) if ram else None,
             "host_ram_used_gib_at_start": round(ram[0] / 2**20, 2) if ram else None,
         }
+
+    task = state.get("task", "smoke")
+    if task != "smoke":  # bench and determinism never submit a job, so there is nothing job-shaped to summarize
+        return _machine_results(root, state, failures, peaks, task)
 
     profiles = [p for p in state.get("profiles", "").split(",") if p]
     detail = {}

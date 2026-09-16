@@ -12,6 +12,15 @@ out end to end. LTX-2.5 by default; MiniMax H3 with `KUNO_SMOKE_FAMILY=h3` ([bel
 
 Nothing touches a chain, and nothing listens beyond 127.0.0.1.
 
+Two other tasks reuse the same machine check, images and weights, but call the worker's own tools instead of the job
+loop — no gateway, no enclave, no job ([Other tasks](#other-tasks)):
+
+- `KUNO_SMOKE_TASK=bench`: `kuno-bench` measures what each profile costs to render, cell by cell. Its JSON is what
+  `kuno-devkit derive-rates` turns into a rate-card proposal, so this is the run that replaces guessed prices.
+- `KUNO_SMOKE_TASK=determinism`: `kuno-verified-check` renders the golden cases twice, in two processes, and compares
+  every committed latent. This is step 1 of `subnet/VERIFIED_MODE.md`'s Phase 0, which a GPU class must pass before
+  verified-mode penalties can apply to it.
+
 `smoke.py` beside the script holds the helpers. They run inside the images, so the host needs only `bash`, `docker`,
 `curl`, `ffprobe` and `tar`.
 
@@ -145,6 +154,36 @@ Measured on 2026-09-15, 4 of 8 H200 141 GB (Tokyo), image `h3-0.1.0-0ad70874cd6b
 | Peak GPU memory (per GPU) | 95 GB | 97 GB |
 | Weights download | 144 GB in 198 s | +61 GB in 90 s |
 
+## Other tasks
+
+Both need the same rented machine as a smoke run, and reuse weights already downloaded there.
+
+**The cost grid** (about 1–3 h on one GPU, `--time-budget` caps it):
+
+```bash
+KUNO_SMOKE_TASK=bench KUNO_SMOKE_BENCH_ARGS="--time-budget 2h --check-determinism" ./ltx-smoke.sh
+```
+
+It writes `results/bench.json`: per profile, cold and warm load times, seconds per denoising step, and wall time,
+GPU-seconds per output second and peak memory for every resolution × fps × duration cell that fits the budget.
+Feed it to `kuno-devkit derive-rates` to get VCU weights and rates with the margin check applied.
+
+**Determinism** (minutes, once the weights are there):
+
+```bash
+KUNO_SMOKE_TASK=determinism KUNO_SMOKE_HARDWARE_CLASS=C1.rtx-pro-6000-bw-se.x1 \
+  KUNO_SMOKE_PROFILES=ltx-2.5-fast ./ltx-smoke.sh
+```
+
+The hardware class is what turns verified mode on, so it is required and must be one the profile lists (see
+`profiles.json`; `C1.rtx-pro-6000-bw-se.x1` is the RTX PRO 6000 Server Edition). It runs `kuno-verified-check run`
+twice — the second process takes its cases from the first run's file — then `compare`, and writes
+`results/verified-<profile>-a.json`, `-b.json` and the compare log. A pass means every leaf matched; the run file
+is then what `python -m kuno_validator.golden adopt` publishes as that class's golden set.
+
+A divergence is reported by the step it happened at: leaf 0 is the seed's noise, a differing conditioning digest is
+the text encoder, a later leaf is the denoiser.
+
 ## Output
 
 Everything for one run is under `KUNO_SMOKE_DIR/runs/<UTC timestamp>/`:
@@ -159,6 +198,8 @@ Everything for one run is under `KUNO_SMOKE_DIR/runs/<UTC timestamp>/`:
 | `results/preflight.txt`, `preflight.json` | `kuno-preflight --no-tee --gateway …` inside the worker image. |
 | `results/plan-<profile>.txt` | `kuno-plan <profile> text_to_video …`. It prints the `cold` backend's `ltx_pipelines` command, which is informational under `real`. |
 | `results/resident-call-<profile>.json` | The keyword arguments the resident backend will pass to diffusers, checked against the pipeline's signature before the worker starts. |
+| `results/bench.json` | `bench` task: the measured cost grid, rewritten after every profile. |
+| `results/verified-<profile>-a.json`, `-b.json` | `determinism` task: each process's committed leaves, with the cases both ran. |
 | `results/jobs/<profile>.mp4` | The generated video. |
 | `results/jobs/<profile>.job.json` | Job id, params, status timeline, receipt summary, wall/queue/render/download seconds, SHA-256 against the receipt. |
 | `results/jobs/<profile>.ffprobe.json`, `.check.json` | ffprobe's output and the checks run on it. |
@@ -199,6 +240,10 @@ All optional.
 | `KUNO_SMOKE_DIR` | `./kuno-smoke` | Weights, runs and tarballs |
 | `KUNO_SMOKE_MODELS_DIR` | `$KUNO_SMOKE_DIR/models/ltx-2.5` | Where the weights are kept |
 | `KUNO_SMOKE_FAMILY` | `ltx` | `ltx` or `h3`; picks the defaults marked "H3:" below |
+| `KUNO_SMOKE_TASK` | `smoke` | `smoke`, `bench` or `determinism` ([above](#other-tasks)) |
+| `KUNO_SMOKE_HARDWARE_CLASS` | unset | The verified hardware class this machine declares; required by `determinism`, optional for `bench` |
+| `KUNO_SMOKE_BENCH_ARGS` | `--time-budget 2h --check-determinism` | Extra `kuno-bench` flags |
+| `KUNO_SMOKE_CASES` | `3` | Golden cases per profile in the `determinism` task |
 | `KUNO_SMOKE_PROFILES` | `ltx-2.5-fast,ltx-2.5-pro` (H3: `h3`) | Profiles to test, in order; one worker container each |
 | `KUNO_SMOKE_COUNTRY` | unset (H3: required) | The test customer's country, sent as `x-kuno-country`, and the worker's `KUNO_MINER_COUNTRY` |
 | `KUNO_SMOKE_PRIVACY` | `standard` (H3: `private`) | Private jobs go through the SDK, sealed to the enclave |

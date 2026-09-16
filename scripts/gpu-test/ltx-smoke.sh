@@ -5,6 +5,8 @@
 #   HF_TOKEN=... GITHUB_TOKEN=... ./ltx-smoke.sh      the real model (KUNO_BACKEND=real) on this machine's GPU
 #   KUNO_SMOKE_MOCK=1 ./ltx-smoke.sh                  dry run without a GPU: local images, KUNO_BACKEND=mock
 #   KUNO_SMOKE_FAMILY=h3 GITHUB_TOKEN=... ./ltx-smoke.sh   MiniMax H3 instead: 4 GPUs, SGLang, the ungated FL2VA weights
+#   KUNO_SMOKE_TASK=bench ./ltx-smoke.sh                   kuno-bench instead of a job: the cost grid pricing needs
+#   KUNO_SMOKE_TASK=determinism ./ltx-smoke.sh             the same cases twice, leaf by leaf (VERIFIED_MODE.md Phase 0)
 #
 # Everything runs in containers on 127.0.0.1 and nothing touches a chain: kuno-devkit init (mock-worker image), a dev
 # gateway on SQLite (gateway image), then for each profile in turn kuno-plan, one worker container with the simulated
@@ -19,6 +21,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MOCK="${KUNO_SMOKE_MOCK:-0}"
 case "$MOCK" in 0 | 1) ;; *) echo "ltx-smoke: KUNO_SMOKE_MOCK must be 0 or 1" >&2 && exit 2 ;; esac
+# smoke: register a worker and render a job through the gateway. bench: measure the cost grid. determinism: Phase 0.
+# bench and determinism talk to the backends directly, so they start no gateway and submit no job.
+TASK="${KUNO_SMOKE_TASK:-smoke}"
+case "$TASK" in smoke | bench | determinism) ;; *) echo "ltx-smoke: KUNO_SMOKE_TASK must be smoke, bench or determinism" >&2 && exit 2 ;; esac
 FAMILY="${KUNO_SMOKE_FAMILY:-ltx}"
 case "$FAMILY" in ltx | h3) ;; *) echo "ltx-smoke: KUNO_SMOKE_FAMILY must be ltx or h3" >&2 && exit 2 ;; esac
 if [ "$FAMILY" = h3 ]; then MOUNT=/models/h3; else MOUNT=/models/ltx-2.5; fi
@@ -99,6 +105,11 @@ if [ -z "$SDK_DIR" ]; then
     if [ -d "$candidate/kunoworld" ]; then SDK_DIR="$(cd "$candidate" && pwd)" && break; fi
   done
 fi
+# The verified hardware class this machine declares, e.g. C1.rtx-pro-6000-bw-se.x1. determinism needs one (it is what
+# turns verified mode on); bench takes it too, and then measures the precision that class serves with.
+HARDWARE_CLASS="${KUNO_SMOKE_HARDWARE_CLASS:-}"
+BENCH_ARGS="${KUNO_SMOKE_BENCH_ARGS:---time-budget 2h --check-determinism}"
+CASE_COUNT="${KUNO_SMOKE_CASES:-3}"
 MIN_DISK_GB="${KUNO_SMOKE_MIN_DISK_GB:-200}"
 MIN_RAM_GB="${KUNO_SMOKE_MIN_RAM_GB:-64}"
 
@@ -209,6 +220,16 @@ check_prerequisites() {
     fi
   fi
 
+  # A profile's verified hardware class turns verified mode on; without it there is no trajectory to compare, and the
+  # class has to be one the profile lists. Both are checked here rather than after a 120 GB download.
+  if [ "$TASK" = determinism ]; then
+    if [ -n "$HARDWARE_CLASS" ]; then
+      pre_ok hardware-class "$HARDWARE_CLASS"
+    else
+      pre_fail hardware-class "KUNO_SMOKE_TASK=determinism needs KUNO_SMOKE_HARDWARE_CLASS, e.g. C1.rtx-pro-6000-bw-se.x1"
+    fi
+  fi
+
   case ",$PROFILES," in
     *,h3-reference,*)
       if [ -f "$REFERENCE_IMAGE" ]; then pre_ok reference-image "$REFERENCE_IMAGE"
@@ -298,7 +319,9 @@ check_prerequisites() {
 
   if [ "$MOCK" = 1 ] && [ "$docker_ok" = 1 ]; then
     local image
-    for image in "$WORKER_IMAGE" "$GATEWAY_IMAGE" "$DEVKIT_IMAGE"; do
+    local wanted=("$WORKER_IMAGE" "$GATEWAY_IMAGE")          # the gateway image also assembles results.json
+    if [ "$TASK" = smoke ]; then wanted+=("$DEVKIT_IMAGE"); fi
+    for image in "${wanted[@]}"; do
       if docker image inspect "$image" >/dev/null 2>&1; then
         pre_ok "image $image" "present locally"
       else
@@ -322,6 +345,7 @@ begin_run() {
   local line
   for line in "${PREREQ_LINES[@]}"; do printf '%s\n' "$line" >>"$STATE"; done
   state mode "$([ "$MOCK" = 1 ] && printf mock || printf gpu)"
+  state task "$TASK"
   state started_epoch "$(now)"
   state backend "$BACKEND"
   state profiles "$PROFILES"
@@ -329,7 +353,7 @@ begin_run() {
   state image.gateway "$GATEWAY_IMAGE"
   state image.devkit "$DEVKIT_IMAGE"
   local key
-  for key in FAMILY COUNTRY PRIVACY DURATION RESOLUTION ASPECT FPS AUDIO LTX_OFFLOAD WEIGHTS_VERIFY HF_REPO HF_REVISION GATEWAY_URL MODELS DATA; do
+  for key in FAMILY COUNTRY PRIVACY DURATION RESOLUTION ASPECT FPS AUDIO LTX_OFFLOAD WEIGHTS_VERIFY HF_REPO HF_REVISION GATEWAY_URL MODELS DATA HARDWARE_CLASS; do
     state "setting.$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')" "${!key}"
   done
   state host.kernel "$(uname -r)"
@@ -452,7 +476,9 @@ pull_images() {
       ok "logged in to $REGISTRY_HOST as $GHCR_USER"
     fi
     started="$(now)"
-    for image in "$WORKER_IMAGE" "$GATEWAY_IMAGE" "$DEVKIT_IMAGE"; do
+    local wanted=("$WORKER_IMAGE" "$GATEWAY_IMAGE")          # the gateway image also assembles results.json
+    if [ "$TASK" = smoke ]; then wanted+=("$DEVKIT_IMAGE"); fi
+    for image in "${wanted[@]}"; do
       t="$(now)"
       if [ "$PULL" = missing ] && docker image inspect "$image" >/dev/null 2>&1; then
         info "using the local $image (KUNO_SMOKE_PULL=missing)"
@@ -472,7 +498,7 @@ pull_images() {
     fi
   fi
   for image in worker:"$WORKER_IMAGE" gateway:"$GATEWAY_IMAGE" devkit:"$DEVKIT_IMAGE"; do
-    state "image.${image%%:*}.id" "$(docker image inspect -f '{{.Id}}' "${image#*:}")"
+    state "image.${image%%:*}.id" "$(docker image inspect -f '{{.Id}}' "${image#*:}" 2>/dev/null || true)"
   done
 }
 
@@ -709,6 +735,117 @@ run_profile() {
   return "$result"
 }
 
+# The worker image with the weights mounted and /out writable, running one of its own tools instead of the job loop:
+# no gateway, no enclave, no job. The environment is the one a worker gets, so what is measured is what miners run.
+worker_tool() {
+  local name="$1" entrypoint="$2"
+  shift 2
+  # As the invoking user, like the weights download and the job helper: /out is the host's results dir, and the tools
+  # write their JSON there. USER is set because torch calls getpass.getuser(), which a host uid the image's
+  # /etc/passwd doesn't know would otherwise crash on.
+  local args=(
+    --rm --label "$LABEL" --name "$name" --user "$(id -u):$(id -g)"
+    -v "$MODELS:$MOUNT:ro" -v "$RESULTS:/out"
+    -e USER=kuno-smoke -e HOME=/tmp -e KUNO_WEIGHTS_ALLOW_UNPINNED=1
+  )
+  if [ "$FAMILY" = h3 ]; then
+    args+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$MIN_GPUS" -e KUNO_SGLANG_LOG=inherit)
+  else
+    args+=(-e KUNO_LTX_MODELS_DIR="$MOUNT")
+  fi
+  if [ "$MOCK" != 1 ]; then
+    if [ "$FAMILY" = h3 ]; then args+=(--gpus "\"device=$(seq -s, 0 $((MIN_GPUS - 1)))\""); else args+=(--gpus all); fi
+    args+=(-e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
+  fi
+  if [ -n "${KUNO_MODEL_DIGEST:-}" ]; then args+=(-e KUNO_MODEL_DIGEST); fi
+  docker run "${args[@]}" --entrypoint "$entrypoint" "$WORKER_IMAGE" "$@"
+}
+
+# The image's own profile catalog decides whether a class exists for these profiles. One second here saves a 120 GB
+# download followed by an immediate failure.
+check_hardware_class() {
+  say "hardware class"
+  local out code=0
+  out="$(docker run --rm --label "$LABEL" --entrypoint python "$WORKER_IMAGE" -c '
+import sys
+from kuno_protocol.profiles import load_profiles
+catalog, hardware_class, bad = load_profiles(), sys.argv[1], []
+for profile_id in sys.argv[2].split(","):
+    profile = catalog.get(profile_id)
+    if profile is None:
+        bad.append(f"{profile_id}: no such profile")
+    elif profile.verified is None or profile.verified.hardware_class(hardware_class) is None:
+        classes = ", ".join(c.id for c in profile.verified.hardware_classes) if profile.verified else "none"
+        bad.append(f"{profile_id}: no verified class {hardware_class} (it has: {classes})")
+print("\n".join(bad))
+sys.exit(1 if bad else 0)' "$HARDWARE_CLASS" "$PROFILES" 2>&1)" || code=$?
+  if [ "$code" = 0 ]; then
+    ok "$HARDWARE_CLASS serves $PROFILES"
+  else
+    printf '%s\n' "$out" | sed 's/^/        /'
+    die "no verified hardware class $HARDWARE_CLASS for these profiles"
+  fi
+}
+
+# What a profile costs to render, cell by cell: the input to `kuno-devkit derive-rates` and so to the rate card.
+run_bench() {
+  say "kuno-bench: $PROFILES"
+  local args=(--backend "$BACKEND" --profiles "$PROFILES" --out /out/bench.json --allow-unpinned --weights-verify "$WEIGHTS_VERIFY")
+  if [ "$FAMILY" != h3 ]; then args+=(--models-dir "$MOUNT" --offload "$LTX_OFFLOAD"); fi
+  if [ -n "$HARDWARE_CLASS" ]; then args+=(--hardware-class "$HARDWARE_CLASS"); fi
+  # shellcheck disable=SC2206 # KUNO_SMOKE_BENCH_ARGS is a list of flags, not one word
+  local extra=($BENCH_ARGS)
+  local code=0
+  state bench.start_epoch "$(now)"
+  worker_tool "$PREFIX-bench" kuno-bench "${args[@]}" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$LOGS/bench.log" || code=$?
+  state bench.stop_epoch "$(now)"
+  state bench_exit "$code"
+  if [ "$code" = 0 ] && [ -s "$RESULTS/bench.json" ]; then
+    ok "bench.json written; feed it to kuno-devkit derive-rates"
+  else
+    state failure "kuno-bench exited $code (logs/bench.log)"
+    bad "kuno-bench exited $code"
+  fi
+  return "$code"
+}
+
+# VERIFIED_MODE.md Phase 0 step 1: the same cases in two processes must commit the same latents, leaf by leaf.
+run_determinism() {
+  local p="$1"
+  local pre="verified.$p" code=0 a="/out/verified-$p-a.json" b="/out/verified-$p-b.json"
+  say "$p: the same cases twice on $HARDWARE_CLASS"
+  local common=(--backend "$BACKEND" --allow-unpinned --weights-verify "$WEIGHTS_VERIFY")
+  if [ "$FAMILY" != h3 ]; then common+=(--models-dir "$MOUNT" --offload "$LTX_OFFLOAD"); fi
+  state "$pre.start_epoch" "$(now)"
+  if ! worker_tool "$PREFIX-vc-a-$p" kuno-verified-check run "${common[@]}" --profile "$p"     --hardware-class "$HARDWARE_CLASS" --case-count "$CASE_COUNT" --out "$a" 2>&1 | tee "$LOGS/verified-$p-a.log"; then
+    state "$pre.error" "the first run failed (logs/verified-$p-a.log)"
+    bad "$p: the first run failed"
+    state "$pre.stop_epoch" "$(now)"
+    return 1
+  fi
+  # The second process takes its cases from the first run's file, so the two cannot drift apart.
+  if ! worker_tool "$PREFIX-vc-b-$p" kuno-verified-check run "${common[@]}" --cases "$a" --out "$b" 2>&1 |
+    tee "$LOGS/verified-$p-b.log"; then
+    state "$pre.error" "the second run failed (logs/verified-$p-b.log)"
+    bad "$p: the second run failed"
+    state "$pre.stop_epoch" "$(now)"
+    return 1
+  fi
+  worker_tool "$PREFIX-vc-cmp-$p" kuno-verified-check compare "$a" "$b" 2>&1 | tee "$LOGS/verified-$p-compare.log" || code=$?
+  state "$pre.stop_epoch" "$(now)"
+  state "$pre.compare_exit" "$code"
+  state "$pre.identical" "$([ "$code" = 0 ] && printf yes || printf no)"
+  state "$pre.a" "verified-$p-a.json"
+  state "$pre.b" "verified-$p-b.json"
+  if [ "$code" = 0 ]; then
+    ok "$p: identical trajectories; this class can hold a golden set (step 3)"
+  else
+    state "$pre.error" "the two runs diverged (logs/verified-$p-compare.log)"
+    bad "$p: NOT deterministic on $HARDWARE_CLASS"
+  fi
+  return "$code"
+}
+
 # ---------------------------------------------------------------- main
 
 trap on_exit EXIT
@@ -719,12 +856,25 @@ check_prerequisites
 begin_run
 start_sampler
 pull_images
+if [ "$TASK" = determinism ]; then check_hardware_class; fi
 fetch_weights
-devkit_init
-start_gateway
-run_preflight
 IFS=',' read -r -a PROFILE_LIST <<<"$PROFILES"
-for profile in "${PROFILE_LIST[@]}"; do
-  run_profile "$profile" || true
-done
+case "$TASK" in
+  bench)
+    run_bench || true
+    ;;
+  determinism)
+    for profile in "${PROFILE_LIST[@]}"; do
+      run_determinism "$profile" || true
+    done
+    ;;
+  *)
+    devkit_init
+    start_gateway
+    run_preflight
+    for profile in "${PROFILE_LIST[@]}"; do
+      run_profile "$profile" || true
+    done
+    ;;
+esac
 MAIN_DONE=1

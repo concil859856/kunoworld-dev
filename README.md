@@ -165,10 +165,18 @@ Both public repositories have CI that runs their own tests standalone.
 - C2PA: a manifest embedded before sealing, under short-lived certificates the gateway's CA
   issues only to freshly attested enclaves, trusted against the KunoWorld root.
 
+**Run on rented GPUs, without confidential computing (2026-09-15)**
+- The LTX-2.5 backend (`ltx-2.5-fast`, `ltx-2.5-pro`) on one RTX PRO 6000 Blackwell, and the H3
+  backend (`h3`, `h3-reference`) on 4 H200s: a worker registers, renders, seals and signs, and the
+  SDK opens the video. Resident runtimes only (`KUNO_BACKEND=real`); the per-job cold start
+  (`KUNO_BACKEND=cold`), `h3-turbo` and `ltx-2.5-4k` have not run. `scripts/gpu-test/` repeats it.
+- The frame and prompt safety classifiers, on the six generated clips (CPU, inside the worker image).
+  They allowed all six benign clips and failed closed on a truncated and a garbage MP4, which shows
+  the path works, not that they block anything.
+- What a second of video costs, measured from the receipts: `research/pricing/measured_2026-09-15.md`
+  and `subnet/PRICING.md`.
+
 **Written, not yet run on real hardware or live services**
-- The H3 backend (official SGLang server; LightX2V Turbo script) and the LTX-2.5 backend, both
-  as per-job cold starts (`KUNO_BACKEND=cold`) and as resident runtimes that keep each profile
-  loaded (`KUNO_BACKEND=real`).
 - TDX quote verification (dcap-qvl, tested on real Phala quotes and Intel collateral) and
   NVIDIA GPU evidence (`nvattest` collection, NRAS or local verification); the production
   attestation policy (`KUNO_ATTESTATION=production`); the worker image and dm-verity weights
@@ -177,9 +185,12 @@ Both public repositories have CI that runs their own tests standalone.
 - Real Stripe, NOWPayments and on-chain payments; the CI workflows; load and stress testing.
 - Verified-mode determinism and step replay on GPUs (the LTX-2.5 and H3 hooks and executors
   are written; `subnet/VERIFIED_MODE.md` lists the Phase 0 checks before penalties go live).
+  `kuno-verified-check` in the worker image runs the first of those checks on a rented machine, and
+  `KUNO_SMOKE_TASK=determinism` drives it end to end.
 - Collateral and Turbo extrinsics on the live chain (storage and call names were read from
   finney metadata; nothing was submitted), and the collateral amount per GPU.
-- The safety classifiers with real weights inside an image, and any accuracy evaluation.
+- Any accuracy evaluation of the safety classifiers: the weights in the image have only ever been run on
+  benign clips, which says nothing about what they catch.
 
 **Not built yet**
 - C2PA Trust List membership for the KunoWorld root (HSM custody, OCSP, conformance).
