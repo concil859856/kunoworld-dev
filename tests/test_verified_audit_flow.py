@@ -159,7 +159,9 @@ def test_gpu_executors_agree_with_the_worker_on_schedules_and_transcripts(world,
     from kuno_validator.executors import LTX_DISTILLED_SIGMAS, LtxStepExecutor
     from kuno_worker.backends.ltx_resident import DISTILLED_SIGMAS, LtxResidentBackend
 
-    assert DISTILLED_SIGMAS == LTX_DISTILLED_SIGMAS
+    # The worker passes diffusers the sigmas it steps through; the scheduler appends the terminal 0.0, so the
+    # transcript records one more than the call did, and that longer list is what a replay is checked against.
+    assert LTX_DISTILLED_SIGMAS == DISTILLED_SIGMAS + [0.0]
     pins = PROFILE.verified.determinism.model_dump(mode="json")
     monkeypatch.setattr(torch_verified, "apply_determinism", lambda settings: {**pins, "torch": "2.x"})
 

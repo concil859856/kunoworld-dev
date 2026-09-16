@@ -38,13 +38,16 @@ class Network:
     stop: threading.Event
     workers: list[Worker] = field(default_factory=list)
 
-    def start_worker(self, profiles: list[str], hotkey: str = "5MinerHotkey01", image_digest: str = devkit.DEV_IMAGE_DIGEST) -> Worker:
+    def start_worker(self, profiles: list[str], hotkey: str = "5MinerHotkey01", image_digest: str = devkit.DEV_IMAGE_DIGEST,
+                     country: str = "JP") -> Worker:
+        """A miner in a country MiniMax H3's licence allows; the gateway refuses an unknown one for H3 profiles."""
         quote_key = signing_key_from_bytes(b64d((self.data_dir / "mock_quote.key").read_text()))
         config = WorkerConfig(
             gateway_url=self.url,
             profiles=profiles,
             image_digest=image_digest,
             miner_hotkey=hotkey,
+            miner_country=country,
             pull_wait_s=1.0,
         )
         worker = Worker(config, MockTEE(quote_key, image_digest), {"*": MockBackend()})
