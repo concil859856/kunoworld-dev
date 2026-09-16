@@ -189,7 +189,7 @@ start_validator() {
   ln -sfn "$DATA/gateway/dev.env" "$DATA/validator/dev.env" # the validator API key, manifest and owner key
   start_service validator KUNO_DATA_DIR="$DATA/validator" KUNO_GATEWAY_URL="$GATEWAY_URL" \
     KUNO_CHAIN_ENDPOINT="$ENDPOINT" KUNO_MIN_COLLATERAL_PER_GPU="$MIN_COLLATERAL" \
-    "$CHAIN_VENV/bin/kuno-validator" run --interval "$VALIDATOR_INTERVAL" --netuid "$netuid" --network local \
+    "$CHAIN_VENV/bin/kuno-validator" run --role main --interval "$VALIDATOR_INTERVAL" --netuid "$netuid" --network local \
     --wallet-name validator --wallet-hotkey default --wallet-path "$DATA/wallets" \
     --canary ltx-2.5-fast --canary ltx-2.5-pro
 }

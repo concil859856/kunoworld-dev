@@ -41,7 +41,7 @@ To run the same flow on the public testnet, see [TESTNET.md](TESTNET.md).
 | 10 | Gateway | `kuno-devkit init --data data/localnet/gateway`, then `kuno-gateway` on `127.0.0.1:8090`. |
 | 11 | Workers | `worker-a` for miner-a serves `ltx-2.5-fast`; `worker-b` for miner-b serves `ltx-2.5-pro`. Both mock TEE and mock backend. `KUNO_HOTKEY_SEED_FILE` is the miner's hotkey seed, so each registration carries a hotkey proof by the key registered on chain. |
 | 12 | Paid jobs | `drive_jobs.py` sends one customer job per profile with the dev API key. Only paid jobs earn job pay; canaries alone leave every miner at weight 0. |
-| 13 | Validator | `kuno-validator run --interval 30 --netuid <n> --network local --wallet-name validator --wallet-path data/localnet/wallets`, with canaries on both profiles and `KUNO_MIN_COLLATERAL_PER_GPU=0.001`, so the collateral gate reads the chain. The Turbo track runs too. |
+| 13 | Validator | `kuno-validator run --role main --interval 30 --netuid <n> --network local --wallet-name validator --wallet-path data/localnet/wallets`, with canaries on both profiles and `KUNO_MIN_COLLATERAL_PER_GPU=0.001`, so the collateral gate reads the chain. The Turbo track runs too. |
 | 14 | Verify | `verify.py` reads the metagraph and the `Weights` storage until the validator's mechanism 0 row gives both miners a nonzero share (600 s at most), prints it as JSON, and exits 0 or 1. It prints the mechanism 1 row as well, which stays empty: a dev gateway serves no Turbo spec (`/turbo/v1/spec` answers 404), so the Turbo track has no qualifying miners and leaves mechanism 1 alone. |
 
 `setup_chain.py` writes `data/localnet/state.json`: netuid, addresses, UIDs, collateral policy and positions,

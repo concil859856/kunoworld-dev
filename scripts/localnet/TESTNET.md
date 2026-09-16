@@ -128,7 +128,7 @@ port with their own data dir. The validator changes three flags:
 
 ```bash
 KUNO_DATA_DIR=data/testnet/validator KUNO_GATEWAY_URL=http://127.0.0.1:8090 KUNO_MIN_COLLATERAL_PER_GPU=0.001 \
-  data/localnet/venv/bin/kuno-validator run --interval 1200 --netuid $N --network test \
+  data/localnet/venv/bin/kuno-validator run --role main --interval 1200 --netuid $N --network test \
   --wallet-name validator --wallet-hotkey default --wallet-path data/testnet/wallets \
   --canary ltx-2.5-fast --canary ltx-2.5-pro
 ```
