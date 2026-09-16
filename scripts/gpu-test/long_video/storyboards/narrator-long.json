@@ -1,0 +1,14 @@
+{
+  "name": "narrator-long",
+  "description": "Voice drift test: one off-screen narrator over eight 5 s shots, cuts and continues. Same voice in shot 8 as in shot 1?",
+  "shots": [
+    {"prompt": "A potter's hands shape wet clay on a spinning wheel, soft studio light. A calm, warm male narrator with a low voice says: \"Every bowl begins as a lump of clay and a little patience.\"", "duration_s": 5, "join": "fresh"},
+    {"prompt": "Close-up of the clay rising into a smooth cylinder between wet fingers on the spinning wheel. The same calm, warm male narrator with a low voice says: \"Keep your hands wet, and let the wheel do the work.\"", "duration_s": 5, "join": "cut"},
+    {"prompt": "The camera slowly pulls back from the spinning wheel as the potter's hands thin the rim of the bowl. The same calm, warm male narrator with a low voice says: \"Slow down near the rim, where the wall is thinnest.\"", "duration_s": 5, "join": "continue"},
+    {"prompt": "A wire tool slides under the finished bowl to lift it from the wheel. The same calm, warm male narrator with a low voice says: \"A clean cut underneath saves you trouble later.\"", "duration_s": 5, "join": "cut"},
+    {"prompt": "The wet bowl is placed carefully on a wooden board beside others. The same calm, warm male narrator with a low voice says: \"Let each piece dry slowly, away from the draft.\"", "duration_s": 5, "join": "continue"},
+    {"prompt": "A brush dips into pale blue glaze in a ceramic studio. The same calm, warm male narrator with a low voice says: \"Glaze is where the bowl finds its colour.\"", "duration_s": 5, "join": "cut"},
+    {"prompt": "The kiln door closes on a shelf of glazed bowls, warm orange light inside. The same calm, warm male narrator with a low voice says: \"Then the fire finishes what your hands began.\"", "duration_s": 5, "join": "cut"},
+    {"prompt": "A row of finished blue bowls drying on a wooden shelf by a sunny window. The same calm, warm male narrator with a low voice says: \"Tomorrow, they go to the table.\"", "duration_s": 5, "join": "cut"}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "harbor-continue",
+  "description": "One seamless take from four continue joins, 5 s shots: does the picture hold (colour, light, boat shape) and does the ambience run through without clicks?",
+  "shots": [
+    {"prompt": "A small blue fishing boat returns to harbor at golden hour, gulls circling overhead, gentle waves, the low hum of the boat's engine, wide shot", "duration_s": 5, "join": "fresh"},
+    {"prompt": "The small blue fishing boat glides past the stone lighthouse at the harbor entrance, golden hour light, gulls calling, the engine humming, camera follows slowly", "duration_s": 5, "join": "continue"},
+    {"prompt": "The small blue fishing boat slows beside a wooden dock, ripples spreading across calm water, warm golden light, gulls landing on the dock posts, the engine idling", "duration_s": 5, "join": "continue"},
+    {"prompt": "The engine of the small blue fishing boat falls quiet, the boat rocks gently at the wooden dock, the sun touches the horizon, gulls settle, soft lapping water", "duration_s": 5, "join": "continue"}
+  ]
+}

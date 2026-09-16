@@ -1,0 +1,14 @@
+{
+  "name": "harbor-long",
+  "description": "Drift test: eight 5 s continue joins (about 38 s, one take). Does the boat, light and colour hold to the end?",
+  "shots": [
+    {"prompt": "A small blue fishing boat returns to harbor at golden hour, gulls circling overhead, gentle waves, the low hum of the boat's engine, wide shot", "duration_s": 5, "join": "fresh"},
+    {"prompt": "The small blue fishing boat glides past the stone lighthouse at the harbor entrance, golden hour light, gulls calling, the engine humming, camera follows slowly", "duration_s": 5, "join": "continue"},
+    {"prompt": "The small blue fishing boat slows beside a wooden dock, ripples spreading across calm water, warm golden light, gulls landing on the dock posts, the engine idling", "duration_s": 5, "join": "continue"},
+    {"prompt": "The engine of the small blue fishing boat falls quiet, the boat rocks gently at the wooden dock, the sun touches the horizon, gulls settle, soft lapping water", "duration_s": 5, "join": "continue"},
+    {"prompt": "The small blue fishing boat rests at the wooden dock as the sun sinks below the horizon, orange sky fading to pink, soft lapping water, distant gulls", "duration_s": 5, "join": "continue"},
+    {"prompt": "Dusk over the harbor, the small blue fishing boat moored at the wooden dock, the first harbor lights turning on, calm water reflecting pink and purple sky", "duration_s": 5, "join": "continue"},
+    {"prompt": "Blue hour in the harbor, the small blue fishing boat silhouetted at the dock, lighthouse beam sweeping slowly, gentle water sounds", "duration_s": 5, "join": "continue"},
+    {"prompt": "Night falls over the quiet harbor, the small blue fishing boat still at the wooden dock, stars appearing, the lighthouse beam turning, soft waves", "duration_s": 5, "join": "continue"}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "mixed-joins",
+  "description": "The quick first check: every join mode once, 3 s shots. Rain on a cafe window, a seamless continue, a cut that keeps the rain's sound under a new picture, then a fresh unrelated shot.",
+  "shots": [
+    {"prompt": "Close-up of rain running down a cafe window at night, neon signs blurred behind the glass, steady soft rain sound", "duration_s": 3, "join": "fresh"},
+    {"prompt": "The camera slowly drifts along the same rainy cafe window, droplets merging and sliding down, neon reflections shimmering, steady soft rain sound", "duration_s": 3, "join": "continue"},
+    {"prompt": "Inside the cafe, a cup of coffee steams on a wooden table beside the rainy window, warm lamp light, the same soft rain sound outside", "duration_s": 3, "join": "cut"},
+    {"prompt": "Aerial shot over an autumn forest with a winding river, morning mist, gentle wind", "duration_s": 3, "join": "fresh"}
+  ]
+}

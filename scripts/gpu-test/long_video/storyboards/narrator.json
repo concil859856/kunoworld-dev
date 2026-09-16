@@ -1,0 +1,10 @@
+{
+  "name": "narrator",
+  "description": "One off-screen narrator across cut and continue joins, 5 s shots: is it the same voice in shot 4 as in shot 1? Run it with --audio-anchor first and again with previous.",
+  "shots": [
+    {"prompt": "A potter's hands shape wet clay on a spinning wheel, soft studio light. A calm, warm male narrator with a low voice says: \"Every bowl begins as a lump of clay and a little patience.\"", "duration_s": 5, "join": "fresh"},
+    {"prompt": "Close-up of the clay rising into a smooth cylinder between wet fingers on the spinning wheel. The same calm, warm male narrator with a low voice says: \"Keep your hands wet, and let the wheel do the work.\"", "duration_s": 5, "join": "cut"},
+    {"prompt": "The camera slowly pulls back from the spinning wheel as the potter's hands thin the rim of the bowl. The same calm, warm male narrator with a low voice says: \"Slow down near the rim, where the wall is thinnest.\"", "duration_s": 5, "join": "continue"},
+    {"prompt": "A row of finished clay bowls drying on a wooden shelf by a sunny window. The same calm, warm male narrator with a low voice says: \"Tomorrow, they go into the kiln.\"", "duration_s": 5, "join": "cut"}
+  ]
+}
