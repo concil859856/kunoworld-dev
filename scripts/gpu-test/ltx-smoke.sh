@@ -50,10 +50,10 @@ if [ "$MOCK" = 1 ]; then
   DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-kunoworld/mock-worker:local}"
   BACKEND="${KUNO_SMOKE_BACKEND:-mock}"
 else
-  if [ "$FAMILY" = h3 ]; then WORKER_TAG_DEFAULT=h3-0.1.0-0ad70874cd6b; else WORKER_TAG_DEFAULT=ltx-0.1.0-0ad70874cd6b; fi
+  if [ "$FAMILY" = h3 ]; then WORKER_TAG_DEFAULT=h3-0.1.0-c8493625f42e; else WORKER_TAG_DEFAULT=ltx-0.1.0-c8493625f42e; fi
   WORKER_IMAGE="${KUNO_SMOKE_WORKER_IMAGE:-$REGISTRY/kunoworld-worker:${KUNO_SMOKE_WORKER_TAG:-$WORKER_TAG_DEFAULT}}"
-  GATEWAY_IMAGE="${KUNO_SMOKE_GATEWAY_IMAGE:-$REGISTRY/kunoworld-gateway:${KUNO_SMOKE_GATEWAY_TAG:-aa11a3ff9e34}}"
-  DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-$REGISTRY/kunoworld-mock-worker:${KUNO_SMOKE_DEVKIT_TAG:-70f74725510f}}"
+  GATEWAY_IMAGE="${KUNO_SMOKE_GATEWAY_IMAGE:-$REGISTRY/kunoworld-gateway:${KUNO_SMOKE_GATEWAY_TAG:-a9a19d97c8a7}}"
+  DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-$REGISTRY/kunoworld-mock-worker:${KUNO_SMOKE_DEVKIT_TAG:-c8493625f42e}}"
   # real: the resident diffusers pipelines, the only LTX runtime the image contains (README.md, "Why KUNO_BACKEND=real").
   BACKEND="${KUNO_SMOKE_BACKEND:-real}"
 fi
