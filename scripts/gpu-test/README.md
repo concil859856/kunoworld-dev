@@ -175,6 +175,10 @@ KUNO_SMOKE_TASK=determinism KUNO_SMOKE_HARDWARE_CLASS=C1.rtx-pro-6000-bw-se.x1 \
   KUNO_SMOKE_PROFILES=ltx-2.5-fast ./ltx-smoke.sh
 ```
 
+`kuno-verified-check` exists only in images built at subnet `da0af19` or later, so this task needs a newer worker
+image than the tags below default to: pass `KUNO_SMOKE_WORKER_TAG`, or build one on the box and use
+`KUNO_SMOKE_WORKER_IMAGE` with `KUNO_SMOKE_PULL=missing`.
+
 The hardware class is what turns verified mode on, so it is required and must be one the profile lists (see
 `profiles.json`; `C1.rtx-pro-6000-bw-se.x1` is the RTX PRO 6000 Server Edition). It runs `kuno-verified-check run`
 twice — the second process takes its cases from the first run's file — then `compare`, and writes
