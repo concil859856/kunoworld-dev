@@ -1642,13 +1642,13 @@ version = "0.1.0"
 source = { editable = "sdk/python" }
 dependencies = [
     { name = "httpx" },
-    { name = "kuno-protocol" },
+    { name = "kuno-protocol", extra = ["tdx"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
-    { name = "kuno-protocol", editable = "subnet/protocol" },
+    { name = "kuno-protocol", extras = ["tdx"], editable = "subnet/protocol" },
 ]
 
 [[package]]
@@ -1659,7 +1659,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 dev = [
     { name = "kuno-gateway", extra = ["observability", "s3"] },
-    { name = "kuno-protocol" },
+    { name = "kuno-protocol", extra = ["tdx"] },
     { name = "kuno-validator" },
     { name = "kuno-worker" },
     { name = "kunoworld" },
@@ -1672,7 +1672,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "kuno-gateway", extras = ["s3", "observability"], editable = "platform/gateway" },
-    { name = "kuno-protocol", editable = "subnet/protocol" },
+    { name = "kuno-protocol", extras = ["tdx"], editable = "subnet/protocol" },
     { name = "kuno-validator", editable = "subnet/validator" },
     { name = "kuno-worker", editable = "subnet/worker" },
     { name = "kunoworld", editable = "sdk/python" },

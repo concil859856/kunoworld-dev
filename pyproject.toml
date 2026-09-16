@@ -30,7 +30,8 @@ kunoworld = { workspace = true }
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "kuno-protocol",
+    # [tdx]: Intel DCAP verification, so the quote and endorsement tests run rather than skip.
+    "kuno-protocol[tdx]",
     "kuno-gateway[s3,observability]",
     "moto[s3]>=5",
     "kuno-worker",
