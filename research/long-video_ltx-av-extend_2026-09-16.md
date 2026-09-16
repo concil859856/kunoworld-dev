@@ -132,3 +132,20 @@ request, but a single 20 s 720p clip ran out of memory. Peaks, bf16, no offload,
 - **The RTX PRO 6000 now advertises:** 720p up to 11 s (5 s at 50 fps) and 1080p 16:9 up to 4 s.
 - **Image:** the LTX image sets expandable segments.
 - **Storyboards** chain shots within those lengths. Longer single clips route to H200-class workers.
+
+## Addendum 2: storyboards through a real gateway on a GPU (19:29–19:42 UTC)
+
+Rental: a MassedCompute RTX PRO 6000, about $0.65. Published images: worker `ltx-0.1.0-1ca142565a29`
+(sha256:ae99f6b8…), gateway `8ee717432b9d`, mock-worker `1ca142565a29`. Driven by `ltx-smoke.sh` with
+`KUNO_SMOKE_STORYBOARD` (dev commit `7c46a65`).
+
+| Run | Mode | Result |
+|---|---|---|
+| `mixed-joins` (4 shots) | Standard | **PASS**: job 42 s, 1280x704, 10.75 s, H.264 + AAC, peak GPU 86.7 GiB |
+| `harbor-long` (8 shots) | Private, sealed by the Python SDK | **PASS**: job 130 s, 35.38 s video, SHA-256 matches the receipt, peak GPU 91.2 GiB |
+| a plain 11 s 720p clip | Standard | rendered 265 frames with no out-of-memory error (the new cap's longest), **but FAIL**: 11.605 s of audio over 11.042 s of video |
+
+**The audio overrun** was an encoder bug in single clips. The vocoder returns more audio than frames for long clips, and
+`apad` plus `-shortest` let ffmpeg cut it half a second late. Fixed in subnet `9b873ef`: the samples are cut or padded
+to frames / fps and the file is capped with `-t`. Storyboards stitch their own audio and were exact. The fix has not
+been re-run on a GPU; a local test with the measured lengths gives 11.041 s of audio over 11.042 s of video.
