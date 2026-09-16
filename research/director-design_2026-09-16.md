@@ -1067,3 +1067,53 @@ option B changes steps 2 and 9.
 - Gemma 4 WebGPU speeds (search snippet): https://gemma4-ai.com/blog/webgpu-browser-guide
 - Transformers.js Gemma 4 tutorial: https://pyimagesearch.com/2026/07/27/running-gemma-4-in-the-browser-with-transformers-js-and-webgpu/
 - Community ComfyUI repack of the 12B encoder: https://huggingface.co/DeepNeuralNerd/Gemma-4-12B-it-uncensored-heretic-DeepNeuralNerd-LTX_2.5_ComfyUI
+
+## 10. GPU spike results (2026-09-16, 20:39–21:00 UTC)
+
+Rental: a MassedCompute RTX PRO 6000 (94.97 GiB), about $0.61. Image `ltx-0.1.0-c8493625f42e`; weights
+`Lightricks/LTX-2.5-Diffusers@426936f8`; scripts in the session scratchpad (`dirspike/`).
+
+**Loaded components on the GPU (bf16, measured):**
+
+| Component | GiB |
+|---|---|
+| transformer | 35.37 |
+| text encoder | 22.28 |
+| prompt enhancer | 9.51 |
+| connectors | 5.91 |
+| VAE, audio VAE, vocoder | 1.69 |
+| **Everything loaded** | **75.68** |
+
+The enhancer takes 9.51 GiB, as §2.3 estimated.
+
+**Planning on the GPU (plan/1 prompt, `do_sample`, T 0.7):**
+
+| Planner | Speed | Time per plan | Extra memory | Result |
+|---|---|---|---|---|
+| E2B `prompt_enhancer` | 49-51 tokens/s | 7.6-18.6 s (387-950 tokens) | 0.12 GiB | 3/5 valid JSON as written. 2/5 had one stray `}` after the shots array, which a repair would fix. 34-59 words per shot. The 90 s brief gave 11 shots, 82 s stitched. |
+| 12B `text_encoder` | 27.7 tokens/s | 74 s (hit the 2,048-token cap) | 0.38 GiB | **Unusable.** It printed random capital letters ("SZGGASSACZGD…"). The jointly trained encoder can no longer write, so §2.2's option (c) is ruled out. |
+
+**Moving the enhancer between CPU and GPU (no confidential computing):**
+- **To the GPU:** 0.5-0.95 s.
+- **Back to the CPU:** 2.7 s.
+- **Loading from disk to the CPU:** 2.3 s.
+- Keeping it in host RAM between plan jobs therefore costs about a second per plan. Confidential-computing bounce buffers will slow this; that is unmeasured.
+
+**Renders with the enhancer evicted to the CPU** (`expandable_segments`, memory cap bypassed):
+
+| Shot | Latent tokens | Result |
+|---|---|---|
+| 720p 20 s | 53,680 | out of memory (needed 6.46 GiB, 4.86 free) |
+| 720p 16 s | 43,120 | **fits**: peak 90.0 GiB allocated, 55-57 s per shot |
+| 1080p 8 s | 51,000 | **fits**: peak 93.87 GiB allocated, 67-69 s per shot |
+
+With the enhancer on the GPU, the measured limit was 12 s at 720p (14 s ran out of memory) and the plan caps 1080p at
+4 s. **Evicting the enhancer takes 720p to at least 16 s and 1080p to at least 8 s on this card.**
+
+**Decisions this settles:**
+1. **The planner is the bundled E2B.** Load it into host RAM, move it to the GPU for a plan or enhancement job, and move
+   it back after.
+2. **The memory plan should count the enhancer as host memory.** Its no-offload budget then serves more (720p about
+   17 s with a conservative fit).
+3. **The 12B-planner path is closed.** Loading a stock 12B planner on larger cards (§2.2's option b) stays possible,
+   but isn't needed for v1.
