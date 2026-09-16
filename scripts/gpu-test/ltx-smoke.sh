@@ -99,6 +99,8 @@ PRIVACY="${KUNO_SMOKE_PRIVACY:-$D_PRIVACY}"
 # h3-reference renders reference_to_video from KUNO_SMOKE_REFERENCE_IMAGE; KUNO_SMOKE_PROMPT replaces the built-in prompt.
 REFERENCE_IMAGE="${KUNO_SMOKE_REFERENCE_IMAGE:-}"
 PROMPT_OVERRIDE="${KUNO_SMOKE_PROMPT:-}"
+# A storyboard JSON (long_video/storyboards format): ltx-2.5-fast renders it as one storyboard job instead of a clip.
+STORYBOARD="${KUNO_SMOKE_STORYBOARD:-}"
 SDK_DIR="${KUNO_SMOKE_SDK_DIR:-}"
 if [ -z "$SDK_DIR" ]; then
   for candidate in "$HERE/sdk" "$HERE/../../sdk/python/src"; do
@@ -616,6 +618,7 @@ run_profile() {
   local p="$1"
   local pre="profile.$p" name="$PREFIX-worker-$p" audio_flag=() code started registered gpus mode=text_to_video extra=()
   if [ "$p" = h3-reference ]; then mode=reference_to_video; fi
+  if [ -n "$STORYBOARD" ] && [ "$p" = ltx-2.5-fast ]; then mode=storyboard; fi
   say "$p"
   if [ "$AUDIO" != 1 ]; then audio_flag=(--no-audio); fi
 
@@ -709,6 +712,10 @@ run_profile() {
       extra+=(--reference-image "/out/inputs/$(basename "$REFERENCE_IMAGE")")
     fi
     if [ -n "$PROMPT_OVERRIDE" ]; then extra+=(--prompt "$PROMPT_OVERRIDE"); fi
+    if [ -n "$STORYBOARD" ] && [ "$p" = ltx-2.5-fast ]; then
+      mkdir -p "$RESULTS/inputs" && cp "$STORYBOARD" "$RESULTS/inputs/storyboard.json"
+      extra+=(--storyboard /out/inputs/storyboard.json)
+    fi
     code=0
     helper "$GATEWAY_IMAGE" run-job --gateway "$GATEWAY_URL" --data /var/lib/kuno/data --profile "$p" \
       --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --audio "$AUDIO" \
