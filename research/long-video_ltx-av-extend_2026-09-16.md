@@ -92,3 +92,43 @@ Each 5 s shot took 13.7 s to generate (4.3 s half-size pass, 9.3 s refine) and 1
    - **Safety:** the gate runs on every shot's prompt and on the stitched output.
    - **Verified mode:** the transcripts need the pinned tokens committed per shot.
 3. **Measure `ltx-2.5-pro`** and 10 s shots.
+
+## Addendum: the product worker path on a GPU, and a memory bug it found (same day, 16:40–17:07 UTC)
+
+Rental: a MassedCompute RTX PRO 6000 (94.97 GiB usable), about $1.03. The run used `scripts/gpu-test/long_video/run_storyboard_worker.py`
+through the worker's own `LtxResidentBackend` (subnet `91b0581`, source mounted into
+`vocence/kunoworld-worker:ltx-0.1.0-0ad70874cd6b`).
+
+**Storyboards through the worker: pass.**
+
+| Run | Output | Wall (incl. 20 s load) | Per shot | Peak allocated |
+|---|---|---|---|---|
+| `mixed-joins` (4 x 3 s) | 258 frames, 10.75 s, audio | 35 s | 8.5 s | 82.7 GiB |
+| `harbor-long` (8 x 5 s) | 849 frames, 35.375 s, audio | 113 s | 13.9 s | 86.9 GiB |
+
+- **Correctness:** frame counts equal `storyboard_frames`, the `shot i/N` progress stages appeared, and no step
+  commitment was produced.
+- **Timing:** it matches the experiment's.
+
+**Clip length is limited by memory, for single clips too.** The worker assumed a 96 GB card holds any `ltx-2.5-fast`
+request, but a single 20 s 720p clip ran out of memory. Peaks, bf16, no offload, from the torch allocator:
+
+| 720p shot length | Latent tokens (full size) | Result |
+|---|---|---|
+| 3 s | 8,800 | 82.69 GiB |
+| 5 s | 14,080 | 86.89 GiB |
+| 12 s | 32,560 | fits only with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`: 93.68 GiB; without it, out of memory with 3.8 GiB reserved but unused |
+| 14, 15, 16, 20 s | 37,840+ | out of memory (with and without expandable segments) |
+| 1080p 50 fps 10 s | 128,520 | out of memory |
+
+- **With `KUNO_LTX_OFFLOAD=model`:** 20 s of 720p fit (66.7 GiB peak, 108-116 s per 20 s shot). But a 5 s shot took
+  41-44 s against 13.9 s without offload, three times slower.
+
+**What changed:**
+- **Recipe:** `ltx-2.5-distilled/bf16/1` activations are now measured: 9.55 GiB fixed plus 3.674 GiB per 10k
+  tokens, the line through the 5 s and 12 s peaks. The fp8-cast and int8 recipes take the same activation terms.
+- **Planner:** it plans against the GPU's reported memory when a class declares none. A card that holds every weight
+  but not the largest requests keeps everything on the GPU and gets a token cap instead of no plan.
+- **The RTX PRO 6000 now advertises:** 720p up to 11 s (5 s at 50 fps) and 1080p 16:9 up to 4 s.
+- **Image:** the LTX image sets expandable segments.
+- **Storyboards** chain shots within those lengths. Longer single clips route to H200-class workers.
