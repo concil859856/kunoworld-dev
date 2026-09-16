@@ -6,6 +6,7 @@ import socket
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,7 +40,7 @@ class Network:
     workers: list[Worker] = field(default_factory=list)
 
     def start_worker(self, profiles: list[str], hotkey: str = "5MinerHotkey01", image_digest: str = devkit.DEV_IMAGE_DIGEST,
-                     country: str = "JP") -> Worker:
+                     country: str = "JP", wait: bool = True) -> Worker:
         """A miner in a country MiniMax H3's licence allows; the gateway refuses an unknown one for H3 profiles."""
         quote_key = signing_key_from_bytes(b64d((self.data_dir / "mock_quote.key").read_text()))
         config = WorkerConfig(
@@ -52,7 +53,8 @@ class Network:
         )
         worker = Worker(config, MockTEE(quote_key, image_digest), {"*": MockBackend()})
         threading.Thread(target=worker.run, args=(self.stop,), daemon=True).start()
-        assert worker.ready.wait(10), "worker failed to register"
+        if wait:
+            assert worker.ready.wait(10), "worker failed to register"
         self.workers.append(worker)
         return worker
 
@@ -64,14 +66,17 @@ class Network:
         return signing_key_from_bytes(b64d((self.data_dir / "owner.key").read_text()))
 
 
-@pytest.fixture
-def network(tmp_path: Path):
+@contextmanager
+def running_network(tmp_path: Path, configure=None):
+    """A gateway on a free port; `configure(settings, data_dir)` adjusts its settings before it starts."""
     data_dir = tmp_path / "data"
     env = devkit.init(data_dir)
     settings = Settings.from_env({"KUNO_DATA_DIR": str(data_dir)})
     settings.allow_country_override = True
     settings.pull_wait_s = 2.0
     settings.janitor_interval_s = 0.5
+    if configure is not None:
+        configure(settings, data_dir)
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(create_app(settings), host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -81,10 +86,18 @@ def network(tmp_path: Path):
         assert time.time() < deadline, "gateway failed to start"
         time.sleep(0.05)
     net = Network(url=f"http://127.0.0.1:{port}", env=env, data_dir=data_dir, stop=threading.Event())
-    yield net
-    net.stop.set()
-    server.should_exit = True
-    thread.join(10)
+    try:
+        yield net
+    finally:
+        net.stop.set()
+        server.should_exit = True
+        thread.join(10)
+
+
+@pytest.fixture
+def network(tmp_path: Path):
+    with running_network(tmp_path) as net:
+        yield net
 
 
 @pytest.fixture(scope="session")
