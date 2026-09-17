@@ -11,6 +11,7 @@ recipes started pinning it.
 | `ltx-2.5-fast` | `ltx-2.5-distilled/bf16/1` | `04998b4216458d10a993607017244f8ce1f9b4746ec10e65c60bd756e2dec1c7` |
 | `ltx-2.5-pro` | `ltx-2.5-dev/bf16/1` | `6aeaf45d6bc3aa50d13c80e42e954efad083bde0bb2d8ebacc7f401c3be92fc0` |
 | `ltx-2.5-fast@O1.rtx-5090-32gb.x1.fp8-cast` | `ltx-2.5-distilled/fp8-cast/1` | `97aa95b16ccd51c0fc328b76acbb0d5e9f1e1665a3dac23d9e5f4ce48530f6c4` |
+| `ltx-2.5-4k` | `ltx-2.5-dfr/bf16/1` (reads `diffusion_decoder`) | `84bad8c6f981c2c05f662947bf749798712597b568f8f99eca2f7b8a1a8ec554` (subnet `25d8d06`, image `ltx-0.1.0-25d8d065d34a`) |
 
 **`ltx-2.5-4k` has no digest yet, and its recipe changed on 2026-09-17.**
 - **What changed.** The resident backend now decodes 4K with LTX-2.5's diffusion decoder. So `ltx-2.5-dfr/bf16/1`'s

@@ -242,3 +242,31 @@ spread. The check now takes the mean (1% of spread) and a 25% maximum.
   VAE's worst case, so this is recorded, not checked. Its splice jumps were 1.2-1.6x.
 - **Weight digests:** the golden manifest's `model_digests` for the three LTX-2.5 recipes were computed on this box.
   They are in `research/weights-digests/`.
+
+## Addendum 5: `ltx-2.5-4k` renders, 1440p on an RTX PRO 6000 (2026-09-17 14:20–14:33 UTC)
+
+**What changed** (subnet `25d8d06`): `ltx-2.5-4k` had no working pipeline. It now renders distilled latents at
+2560x1408 or 3840x2176, then decodes them with diffusers 0.40's `LTX2VideoDiffusionDecodePipeline`, LTX-2.5's diffusion
+decoder. The decoder runs with exact chunked attention (`backends/ltx_diffusion_decode.py`) and its default tiles
+(768 px every 704, 80 frames every 56).
+
+**Setup.** MassedCompute RTX PRO 6000, about 13 min, about $0.47. Image `ltx-0.1.0-25d8d065d34a`; driver
+`scripts/gpu-test/long_video/run_4k_worker.py --clips 1440p:4,2160p:3 --repeat`.
+
+| Clip | Result | Wall | Latent render | Diffusion decode | Peak (render / decode) | Admission's estimate |
+|---|---|---|---|---|---|---|
+| 1440p, 4 s, 97 frames | **pass** | 91.7 s | 44.9 s | 44.6 s | 73.73 / 80.90 GiB | 92.83 / 91.70 GiB |
+| The same clip, same seed | **pass**, frames byte-identical | 91.4 s | 44.8 s | 44.5 s | 73.73 / 80.90 GiB | same |
+| 2160p, 3 s | refused by admission (109.3 GiB estimated, 94.5 usable) | – | – | – | – | – |
+
+- **Load:** 20 s, 66.95 GiB with the decoder.
+- **Sound:** the audio track matches the picture.
+- **Determinism:** a seeded decode repeats exactly.
+- **Weight digest:** computed for the dfr recipe; see `research/weights-digests/`.
+
+**The estimates are far too cautious.**
+- **Render:** the render estimate reuses `ltx-2.5-fast`'s measured line, whose peaks include the VAE decode. A 4K
+  render stops at latents, so it used 6.8 GiB above the weights against about 26 GiB estimated.
+- **Decode:** it used 14 GiB above the weights against about 25 estimated.
+- **Consequence:** the card's advertised envelope (1440p up to 4 s, no 2160p) is probably much smaller than what fits. A
+  calibration sweep past admission (`--calibrate`) is next, to refit both lines.

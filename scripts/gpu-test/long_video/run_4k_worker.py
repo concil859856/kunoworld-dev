@@ -3,6 +3,7 @@ and sound, with its latent render and its diffusion decode timed apart and their
 estimates. Nothing is downloaded but the weights ltx-smoke.sh already fetched.
 
     python run_4k_worker.py --out /out [--models-dir /models/ltx-2.5] [--clips 1440p:4,2160p:3] [--fps 24] [--repeat]
+    python run_4k_worker.py --out /out --calibrate --clips 1440p:8,1440p:12,2160p:2,2160p:4   # refit the memory model
     python run_4k_worker.py --out /out --tiny   # a CPU dry run on tiny random weights: the flow (needs subnet/worker/tests on PYTHONPATH)
 
 Jobs, text-to-video with sound, 16:9, one per `--clips` entry (<resolution>:<seconds>), in order, on one loaded ltx-2.5-4k:
@@ -35,6 +36,7 @@ and the decoder's attention processor, budget and tiling.
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import logging
@@ -61,6 +63,9 @@ parser.add_argument("--fps", type=int, default=24)
 parser.add_argument("--seed", type=int, default=1234)
 parser.add_argument("--offload", default="auto")
 parser.add_argument("--repeat", action="store_true", help="render the first clip again and check its frames repeat")
+parser.add_argument("--calibrate", action="store_true",
+                    help="measure past admission: render every clip even when admission refuses it, record an out-of-memory error "
+                         "with the peak it reached, and go on. The peak checks are not judged. For refitting the 4K memory model only")
 parser.add_argument("--prompt", default="A lighthouse on a rocky coast at dusk, waves breaking below, its beam sweeping through sea spray. "
                                         "Gulls cry over the wind and the surf.")
 parser.add_argument("--tiny", action="store_true", help="CPU dry run on tiny random weights (needs subnet/worker/tests on PYTHONPATH)")
@@ -138,6 +143,11 @@ def load(profile):
 
 
 backend = LtxResidentBackend(None, Path("/tmp/kuno-work"), loader=load, offload=args.offload)
+# Calibration renders what admission refuses: generate() admits again inside, so that check is taken out and run() asks the
+# original one only to record that it would have refused.
+check_admission = backend.admit
+if args.calibrate:
+    backend.admit = lambda task, call: None
 
 
 def task_for(resolution: str, seconds: float, seed: int) -> GenerationTask:
@@ -164,15 +174,33 @@ def admission(task: GenerationTask) -> dict:
 def run(name: str, task: GenerationTask) -> dict:
     estimate = admission(task)
     try:
-        backend.admit(task, build_call(task))
+        check_admission(task, build_call(task))
     except CapacityRefused as refused:
-        record = {"refused": str(refused), "admission": estimate, "checks": {}}
+        if not args.calibrate:
+            record = {"refused": str(refused), "admission": estimate, "checks": {}}
+            summary["clips"][name] = record
+            save()
+            print(f"{name}: refused by admission: {refused}")
+            return record
+        estimate["admission_would_refuse"] = True
+    started = time.perf_counter()
+    if cuda:
+        torch.cuda.reset_peak_memory_stats()
+    try:
+        result = backend.generate(task, lambda value, stage: logging.info("%s %.2f %s", name, value, stage))
+    except torch.OutOfMemoryError as exc:
+        if not args.calibrate:
+            raise
+        # Calibration only: the peak an over-large clip reached before the allocator gave up, then a clean slate for the next.
+        record = {"size": f"{task.width}x{task.height}", "seconds": task.params.duration_s, "oom": str(exc).splitlines()[0][:300],
+                  "peak_allocated_gib": round(torch.cuda.max_memory_allocated() / 2**30, 2), "admission": estimate,
+                  "wall_s": round(time.perf_counter() - started, 1), "checks": {}}
+        gc.collect()
+        torch.cuda.empty_cache()
         summary["clips"][name] = record
         save()
-        print(f"{name}: refused by admission: {refused}")
+        print(f"{name}: out of memory:", json.dumps(record))
         return record
-    started = time.perf_counter()
-    result = backend.generate(task, lambda value, stage: logging.info("%s %.2f %s", name, value, stage))
     wall = round(time.perf_counter() - started, 1)
     path = out / f"{name}.mp4"
     path.write_bytes(result.data)
@@ -187,7 +215,7 @@ def run(name: str, task: GenerationTask) -> dict:
         "sound": info.audio and audio_s is not None and abs(audio_s - video_s) <= 1 / task.params.fps,
     }
     memory = rendered.get("memory_gib") or {}
-    if cuda and estimate:
+    if cuda and estimate and not args.calibrate:
         checks["render peak within admission's estimate"] = memory["latent_render"]["allocated"] <= estimate["render_gib"]
         checks["decode peak within admission's estimate"] = memory["video_decode"]["allocated"] <= estimate["decode_gib"]
     record = {
@@ -226,7 +254,7 @@ if args.repeat and first is not None:
         again["ok"] = all(again["checks"].values())
         save()
 
-rendered = [clip for clip in summary["clips"].values() if "refused" not in clip]
+rendered = [clip for clip in summary["clips"].values() if "refused" not in clip and "oom" not in clip]
 summary["result"] = "PASS" if rendered and all(clip["ok"] for clip in rendered) else "FAIL"
 save()
 print("RESULT:", summary["result"])
