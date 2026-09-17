@@ -1,0 +1,45 @@
+{
+ "roastery": {
+  "brief": "A 30-second ad for a small coffee roastery, warm and handmade.",
+  "target_s": 30,
+  "aspect_ratio": "16:9",
+  "resolution": "720p",
+  "audio": true
+ },
+ "lighthouse": {
+  "brief": "A 45-second short film: an old lighthouse keeper's last night before the light is automated. Quiet and melancholic, with one line of dialogue at the end.",
+  "target_s": 45,
+  "aspect_ratio": "16:9",
+  "resolution": "720p",
+  "audio": true,
+  "style": "35mm film, muted colors, soft grain"
+ },
+ "water": {
+  "brief": "Vertical 20 s explainer for our app Sip that reminds you to drink water. Friendly female voice-over, bright and simple, end on the slogan 'Sip. Stay fresh.'",
+  "target_s": 20,
+  "aspect_ratio": "9:16",
+  "resolution": "720p",
+  "audio": true
+ },
+ "bakery_de": {
+  "brief": "Ein 25-Sekunden-Video f\u00fcr eine kleine B\u00e4ckerei am Morgen, gem\u00fctlich, mit einem kurzen Satz der B\u00e4ckerin auf Deutsch.",
+  "target_s": 25,
+  "aspect_ratio": "16:9",
+  "resolution": "720p",
+  "audio": true
+ },
+ "ebike": {
+  "brief": "A 90-second product film for a folding e-bike: unfold it on a city street at sunrise, ride to work through traffic and a park, fold it and put it in an office locker. Upbeat music, no dialogue.",
+  "target_s": 90,
+  "aspect_ratio": "16:9",
+  "resolution": "720p",
+  "audio": true
+ },
+ "fox_short": {
+  "brief": "A 12-second nature clip: a red fox hunting mice in fresh snow, pouncing headfirst.",
+  "target_s": 12,
+  "aspect_ratio": "16:9",
+  "resolution": "720p",
+  "audio": true
+ }
+}

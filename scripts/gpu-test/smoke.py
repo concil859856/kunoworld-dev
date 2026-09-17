@@ -259,6 +259,42 @@ def _error_text(response) -> tuple[str | None, str]:
     return None, json.dumps(detail)[:300]
 
 
+def _plan_board(args, profile) -> tuple[dict, dict | None]:
+    """Plans the brief through the gateway and returns (what to record, the storyboard to render or None on failure)."""
+    from kuno_protocol.attestation import GoldenManifest
+    from kunoworld import KunoClient, KunoError
+
+    brief = json.loads(Path(args.plan).read_text())
+    key = read_env(Path(args.data) / "dev.env")["KUNO_DEV_API_KEY"]
+    manifest = GoldenManifest.model_validate_json((Path(args.data) / "manifest.json").read_text())
+    record: dict = {"brief": brief["brief"], "target_s": brief["target_s"], "style": brief.get("style")}
+    started = time.time()
+    with KunoClient(key, args.gateway, manifest=manifest, country=args.country or None) as sdk:
+        while True:  # a freshly registered worker can briefly be missing from routing
+            try:
+                plan = sdk.plan(brief["brief"], target_s=float(brief["target_s"]), model=profile.id, resolution=args.resolution,
+                                aspect_ratio=args.aspect, fps=args.fps, audio=bool(args.audio), style=brief.get("style"),
+                                privacy=args.privacy, seed=args.seed, timeout=args.timeout)
+                break
+            except KunoError as exc:
+                status_code, code, message = (list(exc.args) + [0, "error", ""])[:3]
+                if status_code not in (409, 429, 503) or time.time() - started > args.submit_retry_s:
+                    record["error"] = f"{code}: {message}"
+                    return record, None
+                print(f"  planning refused ({status_code} {code}); retrying", flush=True)
+                time.sleep(3)
+    record.update(
+        wall_s=round(time.time() - started, 2), job_id=plan.job_id, title=plan.title, duration_s=plan.duration_s,
+        shots=[{"duration_s": shot.duration_s, "join": shot.join, "beat": shot.beat} for shot in plan.shots], repairs=plan.repairs,
+        planner=plan.planner.model_dump(mode="json"),
+        receipt_plan=plan.receipt.body.plan.model_dump(mode="json") if plan.receipt is not None and plan.receipt.body.plan else None,
+    )
+    print(f"{profile.id}: planned {len(plan.shots)} shots, {plan.duration_s:.3f} s, in {record['wall_s']:.1f} s ({args.privacy})", flush=True)
+    (Path(args.out) / f"{profile.id}.plan.json").write_text(plan.to_json() + "\n")
+    board = {"scene": plan.scene, "shots": [{"prompt": shot.prompt, "duration_s": shot.duration_s, "join": shot.join} for shot in plan.shots]}
+    return record, board
+
+
 def cmd_run_job(args) -> int:
     import uuid
 
@@ -277,6 +313,16 @@ def cmd_run_job(args) -> int:
     # A storyboard file ({"scene": ..., "shots": [{"prompt", "duration_s", "join"}]}, the long_video/storyboards format)
     # makes the job a storyboard: the scene is the prompt, and duration_s is the stitched length (PROTOCOL.md).
     board = json.loads(Path(args.storyboard).read_text()) if args.storyboard else None
+    planned: dict | None = None
+    if args.plan:
+        # A brief file ({"brief", "target_s", "style"?}): the Director writes the storyboard first, through the gateway in
+        # the job's privacy mode with the Python SDK (`KunoClient.plan`), and the plan is then rendered as that storyboard.
+        planned, board = _plan_board(args, profile)
+        if board is None:
+            write_json(out / f"{profile.id}.job.json", {"profile": profile.id, "privacy": args.privacy, "plan": planned, "result": "fail",
+                                                        "error": planned.get("error")})
+            print(f"FAIL  {profile.id}: planning failed: {planned.get('error')}", flush=True)
+            return 1
     shot_specs = shot_prompts = None
     if board is not None:
         from kuno_protocol.profiles import storyboard_duration_s, storyboard_frames
@@ -303,6 +349,8 @@ def cmd_run_job(args) -> int:
         "shots": shot_prompts,
         "result": "fail", "error": None, "timeline": [],
     }
+    if planned is not None:
+        record["plan"] = planned
 
     def finish(code: int, error: str | None = None) -> int:
         record["result"], record["error"] = ("pass" if code == 0 else "fail"), error
@@ -757,6 +805,7 @@ def main() -> int:
     run.add_argument("--reference-image", action="append", default=[], help="a reference image file (Private mode)")
     run.add_argument("--prompt", default="", help="instead of the built-in prompt (a storyboard's scene)")
     run.add_argument("--storyboard", default="", help="a storyboard JSON file (long_video/storyboards format): the job becomes a storyboard")
+    run.add_argument("--plan", default="", help='a brief JSON file ({"brief", "target_s", "style"?}): plan it, then render the plan as a storyboard')
     run.add_argument("--privacy", choices=["standard", "private"], default="standard",
                      help="private goes through the kunoworld SDK (on PYTHONPATH): sealed to the attested enclave")
 

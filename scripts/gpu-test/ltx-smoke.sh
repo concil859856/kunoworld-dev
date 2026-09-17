@@ -101,6 +101,8 @@ REFERENCE_IMAGE="${KUNO_SMOKE_REFERENCE_IMAGE:-}"
 PROMPT_OVERRIDE="${KUNO_SMOKE_PROMPT:-}"
 # A storyboard JSON (long_video/storyboards format): ltx-2.5-fast renders it as one storyboard job instead of a clip.
 STORYBOARD="${KUNO_SMOKE_STORYBOARD:-}"
+# A brief JSON ({"brief", "target_s", "style"?}): ltx-2.5-fast plans it through the gateway (Director), then renders the plan.
+PLAN_BRIEF="${KUNO_SMOKE_PLAN:-}"
 SDK_DIR="${KUNO_SMOKE_SDK_DIR:-}"
 if [ -z "$SDK_DIR" ]; then
   for candidate in "$HERE/sdk" "$HERE/../../sdk/python/src"; do
@@ -618,7 +620,7 @@ run_profile() {
   local p="$1"
   local pre="profile.$p" name="$PREFIX-worker-$p" audio_flag=() code started registered gpus mode=text_to_video extra=()
   if [ "$p" = h3-reference ]; then mode=reference_to_video; fi
-  if [ -n "$STORYBOARD" ] && [ "$p" = ltx-2.5-fast ]; then mode=storyboard; fi
+  if { [ -n "$STORYBOARD" ] || [ -n "$PLAN_BRIEF" ]; } && [ "$p" = ltx-2.5-fast ]; then mode=storyboard; fi
   say "$p"
   if [ "$AUDIO" != 1 ]; then audio_flag=(--no-audio); fi
 
@@ -715,6 +717,9 @@ run_profile() {
     if [ -n "$STORYBOARD" ] && [ "$p" = ltx-2.5-fast ]; then
       mkdir -p "$RESULTS/inputs" && cp "$STORYBOARD" "$RESULTS/inputs/storyboard.json"
       extra+=(--storyboard /out/inputs/storyboard.json)
+    elif [ -n "$PLAN_BRIEF" ] && [ "$p" = ltx-2.5-fast ]; then
+      mkdir -p "$RESULTS/inputs" && cp "$PLAN_BRIEF" "$RESULTS/inputs/brief.json"
+      extra+=(--plan /out/inputs/brief.json)
     fi
     code=0
     helper "$GATEWAY_IMAGE" run-job --gateway "$GATEWAY_URL" --data /var/lib/kuno/data --profile "$p" \
