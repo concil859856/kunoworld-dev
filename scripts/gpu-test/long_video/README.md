@@ -357,3 +357,81 @@ On `CUDA out of memory`, use `--a2v-duration 2`.
   2.5e-6 against a spread of 0.27. That is rounding: a convolution over a shorter input sums in another order. bf16 and
   cuDNN's per-shape algorithms may round more. Compare `tokens_against_whole_clip` with the retake's held-frame PSNR
   (35.8 dB at the lowest in the first run).
+
+## ltx-2.5-4k through the worker: `run_4k_worker.py`
+
+`ltx-2.5-4k` was advertised but could not render. The resident worker sent `pipeline: "dfr"` with the ltx-pipelines CLI's
+`spatial_upscalings` and `temporal_upscalings`, which no diffusers 0.40 pipeline accepts, so the adapter refused it.
+
+**What renders now** (`subnet/MINING.md` §3b; `subnet/worker/src/kuno_worker/backends/ltx_diffusion_decode.py`):
+- **The render.** It is `ltx-2.5-fast`'s, at 2560x1408 or 3840x2176, and stops at latents. Text-to-video runs 8 sigmas at
+  half size, upsamples x2, then 3 at full size. Frames and keyframes run 8 sigmas in one full-size pass. Every frame
+  renders at the requested rate, 48 and 50 fps included.
+- **The frames.** diffusers' `LTX2VideoDiffusionDecodePipeline` decodes them in its default tiles, with the worker's exact
+  chunked neighborhood attention.
+- **The sound.** The audio VAE and the vocoder decode it, as on the other LTX-2.5 profiles.
+
+The driver renders one clip per `--clips` entry through `LtxResidentBackend`, on one load:
+1. 1440p for 4 s;
+2. 2160p for 3 s;
+3. with `--repeat`, the first clip again from the same seed.
+
+It asks admission first. A clip the card's memory plan refuses is recorded with the reason and not rendered. On an
+RTX PRO 6000 that is every 2160p clip and 1440p beyond 4 s (estimated).
+
+It checks each rendered clip:
+- **frames:** the render's, the MP4's and the profile's frame counts agree;
+- **size:** the MP4 is the profile's width and height;
+- **sound:** the MP4 has a track as long as its picture, within a frame;
+- **peaks:** the latent render's peak allocated memory is within admission's render estimate, and the diffusion decode's
+  within its decode estimate. The adapter measures the two apart (`LtxAdapter.measure_memory`);
+- **repeat:** with `--repeat`, the same frames byte for byte.
+
+`RESULT: PASS` and exit 0 when every rendered clip passes, and at least one rendered.
+
+On the GPU box, with `diffusion_decoder/` downloaded (`smoke.py fetch-weights` takes each recipe's `include`, so fetch for
+`ltx-2.5-4k`) and this repo's `subnet/` copied over:
+
+```bash
+OUT=$KUNO_SMOKE_DIR/4k/$(date -u +%Y%m%dT%H%M%SZ) && mkdir -p "$OUT"
+IMAGE=${KUNO_SMOKE_WORKER_IMAGE:-ghcr.io/concil859856/kunoworld-worker:ltx-0.1.0-0ad70874cd6b}   # any image with diffusers 0.40
+docker run --rm --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp -e USER=kuno -e HF_HUB_OFFLINE=1 \
+  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  -v ~/subnet:/src:ro -v ~/gpu-test/long_video:/lv:ro -v "$KUNO_SMOKE_DIR/models/ltx-2.5:/models/ltx-2.5:ro" -v "$OUT:/out" \
+  -e PYTHONPATH=/src/worker/src:/src/protocol/src --entrypoint python "$IMAGE" -u /lv/run_4k_worker.py --out /out --repeat \
+  2>&1 | tee "$OUT/run.log"
+```
+
+- **Options:**
+  - `--clips 1440p:2,2160p:2` makes shorter clips.
+  - `--fps 48` renders every frame at 48 fps, which doubles the tokens.
+  - `--offload model` streams weights for a smaller card, slowly.
+- **Output:**
+  - `4k-1440p.mp4`, `4k-2160p.mp4` and `4k-repeat.mp4`;
+  - `4k.json`, which holds each clip's checks, seconds per phase (`latent_render`, `video_decode`, `audio_decode`) and for
+    the whole job (the MP4 encode on top), each phase's peak allocated and reserved GiB against `admission`, the load, the
+    card's envelope as its plan computes it (`plan.envelope`), and the decoder's attention processor, budget and tiling.
+- **CPU dry run** (the flow on tiny random weights, about 15 s; the memory checks are skipped): add
+  `-v /video/subnet/worker/tests:/t:ro`, put `/t` on `PYTHONPATH`, drop `--gpus` and the weights, and pass `--tiny`. It
+  passed on 2026-09-17 in `kuno-worker:ltx` with the source mounted.
+
+**Estimates, not measurements** (H200, 139.8 GiB reported):
+
+| Item | Estimate |
+|---|---|
+| Load | as `ltx-2.5-fast`, plus 0.8 GiB for the decoder |
+| Render peak | 1440p 4 s: 92.8 GiB; 2160p 3 s: 109.3 GiB. The distilled line, fitted below 51,000 tokens and likely high for a render without the VAE's decode |
+| Decode peak | 1440p 4 s: 91.7 GiB; 2160p 3 s: 97.1 GiB. 66.96 GiB of weights plus the counted decode and a fifth |
+| Render time | unknown. The transformer's attention is global, so 2160p costs about 4.3x a 1080p clip of the same length per step |
+| Decode time | unknown. Each stage-5 query's key box holds about 7x its 11x11x11 window, and the boxes are copied |
+
+**Only this run can settle:**
+- **The render line at 4K tokens.** 57,120 to 130,560 tokens on an H200. If the render peaks well under its estimate,
+  refit it from `memory_gib.latent_render`, and the envelope grows.
+- **The decode's memory.** The count of live tensors can't see the allocator or SDPA's workspace. Also whether CUDA picks
+  a fused SDPA kernel for the boolean masks: the math kernel would materialize each batch's scores and exceed the estimate.
+  Lower `ATTENTION_BUDGET_BYTES` if the decode runs out of memory.
+- **The decode's speed** against the job timeout (3,600 s). If it is too slow, NATTEN vendored into the image would be the
+  next step. That needs `kernels` and the kernel files baked in, since the image may not download them.
+- **The pictures.** Does the diffusion decoder's detail hold at 2160p? Are the tile seams (every 704 px and 56 frames)
+  invisible? Does the sound stay in sync?
