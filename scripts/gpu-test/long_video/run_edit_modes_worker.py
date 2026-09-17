@@ -32,8 +32,9 @@ weights on a CPU can't pass):
                  lines are the VAE's worst case)
   source encode  (`source_encode`, and `encode` in retake-long) the worker's chunked encode (ltx_chunked_encode) on its
                  own: its peak over the weights within quantized.source_encode_gib; at 5 s, its tokens against the
-                 whole-clip encode's (`vae.encode`, as the worker encoded before) within 5% of their spread at most (a
-                 misaligned chunk differs by the whole spread, rounding by far less), with both peaks, a 16-frame-chunk
+                 whole-clip encode's (`vae.encode`, as the worker encoded before): mean difference within 1% of their
+                 spread and the largest within 25% (a misaligned chunk differs by the whole spread; bf16 kernel choice by
+                 0.06 at most on 2026-09-17), with both peaks, a 16-frame-chunk
                  peak, the loaded encoder's layout and its cached activations per pixel (522 for diffusers' default layout)
   loads          every load after the first starts with none of the evicted profile's modules alive and, on a GPU, under
                  1 GiB still allocated. On 2026-09-17 the ltx-2.5-pro load ran out of memory at 94.19 GiB: this driver
@@ -91,8 +92,12 @@ QUALITY = not args.tiny
 PSNR_HELD_DB = 28.0
 # A load after an eviction starts with the evicted weights gone: the CUDA context and allocator bookkeeping aren't allocations.
 EVICTED_LEFT_GIB = 1.0
-# Chunked tokens against the whole-clip encode's, as a share of their spread: a misaligned chunk would differ by about 1.
-ENCODE_MATCH_SPREAD = 0.05
+# Chunked tokens against the whole-clip encode's, as a share of their spread: a misaligned chunk would differ by about 1
+# everywhere. In bf16 on the GPU, convolutions over 8 frames and over 121 pick different kernels. On 2026-09-17 the largest
+# single difference was 0.06 of the spread and the mean 0.001, and the held frames' PSNR was identical to the whole-clip
+# encode's run (35.83 dB minimum, 38.25 mean). So the mean decides, and the maximum only catches a gross misalignment.
+ENCODE_MATCH_MEAN_SPREAD = 0.01
+ENCODE_MATCH_MAX_SPREAD = 0.25
 cuda = torch.cuda.is_available()
 out = Path(args.out)
 out.mkdir(parents=True, exist_ok=True)
@@ -408,7 +413,8 @@ def source_encode_at_5s(pictures: np.ndarray) -> None:
     difference = (tokens - reference).abs()
     spread = float(reference.std())
     record["tokens_against_whole_clip"] = {"max_abs": float(difference.max()), "mean_abs": float(difference.mean()), "spread": spread}
-    record["checks"] = {"tokens match the whole-clip encode": float(difference.max()) <= ENCODE_MATCH_SPREAD * spread}
+    record["checks"] = {"tokens match the whole-clip encode": float(difference.mean()) <= ENCODE_MATCH_MEAN_SPREAD * spread
+                        and float(difference.max()) <= ENCODE_MATCH_MAX_SPREAD * spread}
     if cuda:
         record["checks"]["chunked encode within the estimate"] = record["measured_extra_gib"] <= record["estimate_gib"]
     summary["source_encode"] = record

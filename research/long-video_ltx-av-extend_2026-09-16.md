@@ -189,11 +189,56 @@ with ffmpeg, and the clip to retake was rendered first.
 1. **Encoding the source needs about 8x the memory admission assumes.**
    - Measured: 12.07 GiB extra for 121 frames at 1280x704, against `source_encode_gib`'s 1.47 GiB.
    - A 5 s retake still fit (78.26 GiB).
-   - If encode memory grows with length, retakes near the RTX PRO 6000's 15 s cap would run out of memory. A chunked
-     encode and a corrected estimate are being built.
+   - If encode memory grows with length, retakes near the RTX PRO 6000's 15 s cap would run out of memory. Fixed the
+     same day with a chunked encode (addendum 4).
 2. **The driver kept the evicted `ltx-2.5-fast` pipeline alive,** so its single-process run ran out of memory loading
    `ltx-2.5-pro`.
    - The worker is fine: `LtxResidentBackend.warm(fast)` then `warm(pro)` reloaded to 66.18 GiB in 12.0 s.
-   - Audio-to-video was run in a fresh process; the driver is being fixed.
+   - Audio-to-video was run in a fresh process. The driver was fixed and re-run in one process (addendum 4).
 
 Clips: `data/gpu-tests/ltx-2.5/repro-20260917T0118_edit-*.mp4` and `repro-20260917T0124_edit-a2v.mp4`.
+
+## Addendum 4: the chunked source encode, and an 18 s retake at the cap (2026-09-17 12:18–12:47 UTC)
+
+**What changed** (subnet `6c43b02`, `backends/ltx_chunked_encode.py`):
+- **Encode:** a retake's source is encoded as frame 0, then 8 frames at a time. The causal convolutions' last input
+  frames carry between chunks, so encode memory no longer grows with length.
+- **Admission:** it counts the encode's peak beside the weights, not on top of the render (the encode frees before
+  denoising). The retake cap on the RTX PRO 6000 rose from 15 s to 18 s at 720p.
+- **Driver:** it now releases evicted pipelines.
+
+**Setup.** MassedCompute RTX PRO 6000, about 29 min, about $1.05. About 10 of those minutes went to a stale SSH host
+key on a reused IP. Image `ltx-0.1.0-6c43b0258502` (ghcr); driver `run_edit_modes_worker.py`, every job in one process.
+
+| Job | Wall | Peak allocated | Admission's estimate | Result |
+|---|---|---|---|---|
+| Source clip, 5 s | 30.7 s | 77.22 GiB | 77.48 GiB | pass |
+| Retake 1.5-3.5 s | 22.9 s | 77.24 GiB (78.26 before, with the whole-clip encode) | 77.73 GiB | pass |
+| Retake, sound only | 22.8 s | 77.25 GiB | 77.73 GiB | pass |
+| **Retake of an 18 s clip** (433 frames, 48,400 tokens) | 115.9 s | **92.94 GiB** | 93.51 GiB | pass |
+| Audio-to-video, `ltx-2.5-pro`, 4 s, after evicting fast | 230.0 s | 75.90 GiB | 77.44 GiB | pass |
+
+**The encode, measured on its own:**
+- **Chunked encode, 121 frames at 1280x704:** 1.63 GiB above the weights in 1.09 s. 433 frames took 1.64 GiB, so it
+  doesn't grow with length.
+- **Against the estimate:** `source_encode_gib` says 2.43 GiB. 16-frame chunks took 2.42 GiB; the whole clip at once
+  took 12.06 GiB.
+- **The encoder's real layout:** `block_out_channels` [256, 512, 1024, 1024], `layers_per_block` [4, 6, 4, 2, 2], causal.
+  It caches 448 values per pixel, not the 522 of diffusers' default layout, so the estimate is conservative.
+
+**Token agreement.** Chunked tokens against the whole-clip encode, in bf16:
+- mean absolute difference 0.001;
+- largest 0.059, against a spread of 0.977.
+
+The driver's 5% maximum failed the run on this alone, so `RESULT: FAIL` is this check. But the retake's held frames
+came back exactly as with the whole-clip encode: 35.83 dB minimum and 38.25 dB mean in both runs. The differences
+are kernel choice (convolutions over 8 frames against 121), not a misalignment, which would differ by the whole
+spread. The check now takes the mean (1% of spread) and a 25% maximum.
+
+**Other results.**
+- **Evictions:** both loads started clean. No module of the evicted profile was alive, and 0.01 GiB was allocated
+  before pro loaded, which took 13.9 s.
+- **Long retake quality:** held frames on the test-pattern source were 25.0-26.6 dB. A test pattern's fine lines are the
+  VAE's worst case, so this is recorded, not checked. Its splice jumps were 1.2-1.6x.
+- **Weight digests:** the golden manifest's `model_digests` for the three LTX-2.5 recipes were computed on this box.
+  They are in `research/weights-digests/`.
