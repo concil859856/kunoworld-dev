@@ -1117,3 +1117,75 @@ With the enhancer on the GPU, the measured limit was 12 s at 720p (14 s ran out 
    17 s with a conservative fit).
 3. **The 12B-planner path is closed.** Loading a stock 12B planner on larger cards (§2.2's option b) stays possible,
    but isn't needed for v1.
+
+## 11. The implementation on a GPU, through the worker's own code (2026-09-16 23:44 – 09-17 00:05 UTC)
+
+Rental: MassedCompute RTX PRO 6000 Blackwell (94.97 GiB usable), about 20 min, about $0.75. Subnet `d32b8ed` source
+mounted into `vocence/kunoworld-worker:ltx-0.1.0-c8493625f42e` (same dependencies). No gateway: the driver
+`scripts/gpu-test/long_video/run_director_worker.py` calls `LtxResidentBackend` and the worker's own plan methods
+(`Worker._checked_plan`, so repair, the single retry and the image's real safety classifiers all ran). Load 12.2 s,
+66.18 GiB allocated once loaded.
+
+### 11.1 Plans
+
+| Brief | Target | Wall | Tokens | Shots | Stitched | Repairs |
+|---|---|---|---|---|---|---|
+| roastery (16:9) | 30 s | 15.8 s | 485 | 6 | 29.708 s | shortened 5 shots |
+| lighthouse (style set) | 45 s | 20.8 s | 764 | 9 | 44.708 s | one continue at a new shot size made a cut; shortened 4 |
+| water (9:16, quoted slogan) | 20 s | 24.4 s | 881 | 4 | 20.042 s | one invalid join made a cut; shortened 2 |
+| bakery (German) | 25 s | 13.1 s | 445 | 5 | 25.375 s | shortened 5 |
+| e-bike | 90 s | 41.4 s | 1,638 | 10 | 90.458 s | three continues at a new shot size made cuts; lengthened all |
+| fox | 12 s | 10.3 s | 268 | 2 | 12.375 s | lengthened 1 |
+
+- **All six were valid** and within 0.5 s of the target. Wall time includes moving the enhancer to the GPU and back and
+  the safety checks on every shot prompt: 26-40 tokens/s end to end, against 49-51 for generation alone.
+- **Memory:** 9.6-9.8 GiB extra while planning, **0.00-0.01 GiB left on the GPU after**. The enhancer goes back to
+  host RAM as designed.
+- **Length:** the planner overshoots by 10-30% (undershoots on the 90 s brief), so the fit adjusts almost every plan.
+  Every change is written in `repairs`.
+- **Joins:** the planner chooses `cut` for almost everything. `continue` appeared once in six plans, and the repair
+  turned three more into cuts because the shot size changed. Seamless long takes will mostly come from customers editing
+  joins, or from a later prompt revision.
+- **Content:** shot prompts follow the brief. The water ad keeps the quoted slogan "Sip. Stay fresh." and a consistent
+  character and voice-over. The German brief was planned in English prompts.
+- **Revision** of shot 2 of the roastery plan ("a close-up of the roaster's hands"): 16.0 s, 492 tokens. Every other shot,
+  the title and the scene came back byte-identical. The model still writes the whole plan, so a prompt that asks only for
+  the rewritten shots would make revisions faster.
+
+### 11.2 The roastery plan rendered as a storyboard
+
+6 shots, 713 frames, 29.708 s video and 29.708 s audio. Shots took 14.0 s (5 s) and 16.7 s (6 s); peak GPU use was
+83.6 GB (nvidia-smi). The six frames follow the plan's beats in one warm roastery look:
+`data/gpu-tests/ltx-2.5/repro-20260916T2358_director-storyboard-roastery.mp4`.
+
+### 11.3 Enhanced prompt
+
+A 5 s 720p clip with enhancement: 8.1 s to enhance ("a red fox trotting through fresh snow at dusk" became a 100-word
+cinematic prompt), which passed the prompt classifier; 0.0 GiB of the enhancer left on the GPU; audio equal to video.
+
+### 11.4 Memory limits and the audio fix
+
+The card advertises (24 fps) 720p 16:9 and 9:16 up to 18 s, 4:3 20 s, 1:1 18 s and 21:9 14 s; 1080p 16:9 8 s, 4:3 10 s,
+1:1 14 s and 21:9 5 s. Single clips at those limits:
+
+| Clip | Frames | Video / audio | Wall | Peak |
+|---|---|---|---|---|
+| 720p 16:9 11 s (the overrun case) | 265 | 11.042 / 11.041 s | – | – |
+| 720p 16:9 18 s | 433 | 18.042 / 18.041 s | – | 96.5 GB used (nvidia-smi) |
+| 1080p 16:9 8 s | 193 | 8.042 / 8.041 s | – | 97.2 GB used of 97.9 (nvidia-smi) |
+| 720p 4:3 20 s | 481 | 20.042 / 20.041 s | 50.9 s | 88.47 GiB allocated, 90.11 reserved |
+| 720p 21:9 14 s | 337 | 14.042 / 14.041 s | 65.1 s | 93.19 GiB allocated, 93.31 reserved |
+| 720p 1:1 18 s | 433 | 18.042 / 18.041 s | 65.8 s | 93.46 GiB allocated, 93.58 reserved |
+
+- **Every limit fits**, with 1.5-6.5 GiB to spare by torch's own count. The 16:9 rows lost torch's numbers to a driver bug (the image has no ffprobe; fixed with PyAV).
+- **These ran after plans, a storyboard and other clips in the same process**, so allocator fragmentation was realistic.
+  Memory depends only on the shape, so another prompt or seed at the same size needs the same.
+- **The audio fix holds:** audio ends within 1 ms of the video at every length, including the 11 s clip that ran 0.56 s
+  long before.
+
+### 11.5 What this leaves
+
+- Plans through a real gateway and both SDKs, after phase B (gateway gating, `/v1/plans`, SDK `plan()`).
+- Plan price: a plan takes 10-41 s of one RTX PRO 6000. At $1.879/h confidential and 60% utilization, a 41 s plan
+  costs about $0.036, so the flat $0.08 Standard and $0.10 Private prices cover it about 2-3x.
+- Optional prompt work: more `continue` joins, and revisions that write only the rewritten shots.
