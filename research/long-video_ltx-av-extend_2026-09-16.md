@@ -313,3 +313,17 @@ Standard (fal's list).
   cost per second rises 24% from 4 to 10 s).
 - **In `profiles.json`:** the weights are still placeholders, 22 and 60 with slope 0.03. Update them after the memory
   refit lands.
+
+## Addendum 7: 2160p 4 s under the refit model (2026-09-17 15:45–15:58 UTC)
+
+The refit memory model (subnet `69e34d6`) admits 2160p for 4 s on the RTX PRO 6000. That cell was unmeasured, and a
+straight line through the 2 s and 3 s decode peaks put it near 93.1 GiB, so it was run under normal admission. Image
+`ltx-0.1.0-69e34d62492b`; about 13 min, about $0.47.
+
+| Clip | Frames | Tokens | Wall (render + decode) | Render peak | Decode peak | Estimate (render / decode) |
+|---|---|---|---|---|---|---|
+| 2160p 4 s | 97 | 106,080 | 267 s (153 + 109) | 82.13 GiB | **90.28 GiB** | see `4k.json`; decode 92.35 |
+
+**Pass.** The decode peaked at 90.28 GiB, as the tile replay predicted (90.3), not the straight line: a clip past 80
+frames opens a second temporal tile group. So the RTX PRO 6000 serves 2160p up to 4 s and 1440p up to 10 s, both
+measured. Clip: `data/gpu-tests/ltx-2.5/repro-*_v4k-4k-2160p.mp4`.
