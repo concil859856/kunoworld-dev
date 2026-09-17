@@ -260,7 +260,7 @@ All optional.
 | `KUNO_SMOKE_WEIGHTS_VERIFY` | `full` | `KUNO_WEIGHTS_VERIFY` (`size` needs `KUNO_MODEL_DIGEST`) |
 | `KUNO_MODEL_DIGEST` | unset | Passed to the worker when set |
 | `KUNO_SMOKE_REGISTRY` | `ghcr.io/concil859856` | Image registry and namespace |
-| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-89568ae64d7e` (or `h3-0.1.0-89568ae64d7e`), `cc8e9fb2553d`, `89568ae64d7e` | Image tags |
+| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-6c43b0258502` (or `h3-0.1.0-6c43b0258502`), `cc8e9fb2553d`, `6c43b0258502` | Image tags |
 | `KUNO_SMOKE_WORKER_IMAGE`, `_GATEWAY_IMAGE`, `_DEVKIT_IMAGE` | built from the two rows above | Whole image references, e.g. `…@sha256:…` |
 | `KUNO_SMOKE_SKIP_LOGIN`, `KUNO_SMOKE_REGISTRY_USER` | `0`, `concil859856` | Skip `docker login` (public images); the login user name |
 | `KUNO_SMOKE_PULL` | `always` | `missing`: use an image already on this machine (e.g. one built there) and pull the rest |
