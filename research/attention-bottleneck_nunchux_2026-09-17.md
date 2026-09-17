@@ -120,3 +120,26 @@ workstation Blackwell cards with 4-bit values.
 - **LTX-2.5:** try SageAttention3 as a diffusers attention processor on the RTX PRO 6000 at 5 s and 18 s 720p. Keep it
   behind a separate precision recipe (point 4). Worth doing only if the 18 s single clip gains 20% or more.
 - **Watch for a VC-Attention code release.** The paper is CC BY 4.0; no kernel is published.
+
+## Measured on our own stack (2026-09-17, same day)
+
+SageAttention was tried on the H3 image during the 8× H200 check (`h3-image-check_2026-09-17.md` §3). It is the open
+stand-in for VC-Attention, which has no code release.
+
+| H3 Turbo, 1 H200, 8 passes, 5 s | Backend | Wall | GPU-s per output second |
+|---|---|---|---|
+| A | FlashAttention (`fa`) | 51.26 s | 9.92 |
+| B | SageAttention (`sage_attn`) | 47.95 s | 9.28 |
+
+- **6.5% faster end to end**, close to the paper's 13% for 8-bit attention on an H200 at a larger token count.
+- **Quality:** 30.2 dB PSNR and 0.925 SSIM against the FlashAttention clip, much closer than the paper's 19.9 dB for
+  SageAttention2 against BF16, because Turbo runs 8 passes instead of 50.
+- **Cost:** the package is not in the image and took 234 s to build on the box (nvcc 13.4 against CUDA 13.0 headers
+  needs `-DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK`; libcuda must be on the link path). It also costs about 2 GB of GPU
+  memory.
+- **It is really used:** SGLang's log names the backend, so a silent fallback would show.
+
+**What this changes in the conclusions above:** point 1 stands (a few per cent off H3's cost doesn't close the gap to
+fal), but a 6.5% saving on Turbo is worth having if the picture holds up to a viewer, because Turbo is the H3 profile
+we can actually sell. Point 4 gains evidence: low-bit attention keeps far more of the original picture on a
+few-step model than on a 50-step one.
