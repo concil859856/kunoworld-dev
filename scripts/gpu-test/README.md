@@ -251,6 +251,8 @@ All optional.
 | `KUNO_SMOKE_PROFILES` | `ltx-2.5-fast,ltx-2.5-pro` (H3: `h3`) | Profiles to test, in order; one worker container each |
 | `KUNO_SMOKE_COUNTRY` | unset (H3: required) | The test customer's country, sent as `x-kuno-country`, and the worker's `KUNO_MINER_COUNTRY` |
 | `KUNO_SMOKE_PRIVACY` | `standard` (H3: `private`) | Private jobs go through the SDK, sealed to the enclave |
+| `KUNO_SMOKE_STORYBOARD` | unset | A storyboard JSON (`long_video/storyboards/`): `ltx-2.5-fast` renders it as one storyboard job |
+| `KUNO_SMOKE_PLAN` | unset | A brief JSON (`long_video/briefs/`): `ltx-2.5-fast` plans it through the gateway with the SDK, then renders the plan as a storyboard |
 | `KUNO_SMOKE_SDK_DIR` | `./sdk` or the repo's `sdk/python/src` | The `kunoworld` SDK mounted into the job helper |
 | `KUNO_SMOKE_REFERENCE_IMAGE`, `KUNO_SMOKE_PROMPT` | unset | A reference image (needed by `h3-reference`) and a prompt to replace the built-in one |
 | `KUNO_SMOKE_DURATION`, `_RESOLUTION`, `_ASPECT`, `_FPS`, `_AUDIO` | `2`, `720p`, `16:9`, `24`, `1` (H3: `5`, `768p`) | The test job |
@@ -258,7 +260,7 @@ All optional.
 | `KUNO_SMOKE_WEIGHTS_VERIFY` | `full` | `KUNO_WEIGHTS_VERIFY` (`size` needs `KUNO_MODEL_DIGEST`) |
 | `KUNO_MODEL_DIGEST` | unset | Passed to the worker when set |
 | `KUNO_SMOKE_REGISTRY` | `ghcr.io/concil859856` | Image registry and namespace |
-| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-c8493625f42e` (or `h3-0.1.0-c8493625f42e`), `a9a19d97c8a7`, `c8493625f42e` | Image tags |
+| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-89568ae64d7e` (or `h3-0.1.0-89568ae64d7e`), `cc8e9fb2553d`, `89568ae64d7e` | Image tags |
 | `KUNO_SMOKE_WORKER_IMAGE`, `_GATEWAY_IMAGE`, `_DEVKIT_IMAGE` | built from the two rows above | Whole image references, e.g. `…@sha256:…` |
 | `KUNO_SMOKE_SKIP_LOGIN`, `KUNO_SMOKE_REGISTRY_USER` | `0`, `concil859856` | Skip `docker login` (public images); the login user name |
 | `KUNO_SMOKE_PULL` | `always` | `missing`: use an image already on this machine (e.g. one built there) and pull the rest |
