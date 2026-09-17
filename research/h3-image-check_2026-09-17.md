@@ -63,20 +63,28 @@ cost x 1.25 / 0.60, the smallest price that pays a miner the PRICING.md rate and
 
 | Serving | GPU-s/s | Cost per output second | Floor | Our price (Standard / Private) |
 |---|---|---|---|---|
-| `h3-turbo`, 4 GPUs, through the worker | 15.6 | $0.035 | **$0.072** | $0.05 / $0.065 |
-| `h3-turbo`, 1 GPU, FlashAttention | 9.92 | $0.022 | **$0.046** | $0.05 / $0.065 |
-| `h3-turbo`, 1 GPU, SageAttention | 9.28 | $0.021 | **$0.043** | $0.05 / $0.065 |
-| `h3` (full), 4 GPUs, through the worker | 63.8 | $0.142 | **$0.295** | - / $0.20 |
+| `h3-turbo`, 4 GPUs, through the worker | 15.6 | $0.035 | **$0.072** | $0.04 / $0.065 |
+| `h3-turbo`, 1 GPU, FlashAttention | 9.92 | $0.022 | **$0.046** | $0.04 / $0.065 |
+| `h3-turbo`, 1 GPU, SageAttention | 9.28 | $0.021 | **$0.043** | $0.04 / $0.065 |
+| `h3` (full), 4 GPUs, through the worker | 63.8 | $0.142 | **$0.295** | $0.06 / $0.30 |
 
-1. **Serve Turbo on one GPU, not four.** On four GPUs its floor ($0.072) is above both our prices; on one GPU it fits
-   under them. One GPU was already 15-20% cheaper per GPU-second on 2026-09-16; the worker's overhead makes the gap
+The prices are today's catalog (`profiles.json`), where Standard matches fal's list and Private covers cost: `h3-turbo`
+$0.04 / $0.065 with `long_clip` 1.4x over 8 s, `h3` $0.06 / $0.30 with 1.7x over 6 s. An earlier draft of this note
+quoted a stale $0.20 for Private full H3.
+
+1. **Serve Turbo on one GPU, not four** (owner approved 2026-09-17). On four GPUs its floor ($0.072) is above both
+   prices; on one GPU it is $0.046, under the $0.065 Private price, though still 13% above the $0.04 Standard price,
+   which matches fal's list. SageAttention narrows that to $0.043. One GPU was already 15-20% cheaper per GPU-second on 2026-09-16; the worker's overhead makes the gap
    decisive. It also needs no multi-GPU confidential VM.
    - **Caveat:** a 1-GPU H200 peaks at 126-129 GB of 141 GB for a 5 s clip, and the 2026-09-16 run peaked at 138-139 GB
      at 14 s. Cap 1-GPU Turbo's length, or give it a B200/B300.
 2. **SageAttention is worth adopting for Turbo** once its quality is judged by eye: 6.5% cheaper for 2 GB of memory,
    with the same picture to 30 dB. It needs a package built into the image, not a flag, and its own precision recipe.
-3. **Full H3 is still far below its floor** ($0.295 against $0.20 Private), as measured before. Either raise the price,
-   cap its length, or serve it only where GPUs are cheaper.
+3. **Full H3's Private price already covers its floor:** $0.30 against $0.295 at 5 s, and at 14 s the `long_clip`
+   multiplier gives $0.51 against a $0.505 floor (2026-09-16 numbers). The margin is thin but positive, and Private
+   full H3 is a premium, privacy-only profile; fal sells the non-private version at $0.08.
+   - **Standard full H3 at $0.06** (fal's list) is a fifth of its cost. It should be withdrawn from Standard, or served
+     only where GPUs are much cheaper.
 4. **`h3-turbo`'s VCU weight** (19 at 768p, slope 0.072) matches 4-GPU serving. If Turbo moves to one GPU, re-measure
    it: 1-GPU serving is about 0.6x the cost.
 
@@ -105,4 +113,5 @@ rendered on one H200 each, concurrently with the H3 runs.
 2. **Decide 1-GPU Turbo serving** (a new hardware class and envelope), and re-measure its VCU weight.
 3. **Decide on SageAttention** in the H3 image: it adds a build step and a second attention implementation to pin in
    the recipe.
-4. **Full H3's price** needs an owner decision (§4).
+4. **Standard full H3 at $0.06** is a fifth of its $0.295 floor; Private at $0.30 is fine. Decide whether Standard
+   should offer full H3 at all.
