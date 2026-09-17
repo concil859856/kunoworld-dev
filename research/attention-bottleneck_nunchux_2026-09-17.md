@@ -110,11 +110,8 @@ workstation Blackwell cards with 4-bit values.
 
 ## Suggested next steps
 
-- **On the next H3 rental** (the $25 4x H200 check the owner hasn't approved yet), add one row per backend at 5 s and
-  14 s: BF16 FlashAttention (today), `sage_attn` (install `sageattention` into `/opt/sglang`), and Turbo 8-step with
-  `sage_attn`.
-  - Record wall time, GPU-seconds per output second, and PSNR/LPIPS against the BF16 clip at the same seed.
-  - This tells us whether low-bit attention narrows the H3 floor enough to matter. The paper's numbers suggest 10-20%.
+- **Done on 2026-09-17** for Turbo 8-step on one H200 (see the section below): 6.5% faster, 30.2 dB. Still open: the
+  same A/B for full H3 at 50 passes and at 14 s, where the paper predicts a larger gain and a bigger quality change.
 - **Track SGLang main's H3 sparse backends** (`video_sparse_attn_h3`, `hybrid_window_attn_h3`) for the next SGLang
   bump. Sparse attention changes quality more than low-bit attention does, so it needs the same side-by-side check.
 - **LTX-2.5:** try SageAttention3 as a diffusers attention processor on the RTX PRO 6000 at 5 s and 18 s 720p. Keep it
