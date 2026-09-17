@@ -121,8 +121,14 @@ resumes partial files and skips complete ones.
 
 ## MiniMax H3
 
+Run `region-check.sh` on the machine first (`bash region-check.sh JP ap-northeast-1,ap-northeast-3`, last line `PASS`):
+the MiniMax H3 licence excludes the US, EU, UK and South Korea, testing included, and nothing H3 may be downloaded
+before the check passes.
+
 ```bash
 KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP GITHUB_TOKEN=ghp_... ~/gpu-test/ltx-smoke.sh
+# Turbo, then full H3, one worker each:
+KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_PROFILES=h3-turbo,h3 ~/gpu-test/ltx-smoke.sh
 # reference-to-video as well:
 KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_PROFILES=h3-reference \
   KUNO_SMOKE_REFERENCE_IMAGE=~/ref/fox.png KUNO_SMOKE_PROMPT='The fox from the reference image in an autumn forest' \
@@ -142,6 +148,12 @@ What differs from LTX:
   outside the licence's excluded territories, and refuses to register a worker running inside them.
 - **Weights** are a Hugging Face cache at `/models/h3` (`HF_HUB_CACHE`), not a diffusers directory: `FL2VA/` for `h3`
   and `h3-turbo`, `Ref2VA/` for `h3-reference`, plus the repo's root JSON. It is not gated, so `HF_TOKEN` is optional.
+- **`h3-turbo`** also needs LightX2V's 8-step 768p LoRA (`lightx2v/Minimax-h3-Turbo@3ec17a32`,
+  `minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors`). The script downloads it to `<models>/turbo/` whenever the
+  profiles include `h3-turbo`, mounts it with the cache and sets `KUNO_H3_TURBO_LORA`, which `kuno-h3-worker` passes
+  to the Turbo server as `--lora-path`. `weights.json` records it under `turbo_lora`.
+- **Prefetching.** `h3_sglang/fetch_h3.py` writes the same cache and LoRA with nothing but `huggingface_hub`, so the
+  download can start on the host while the images are still pulling; the script's own download then takes seconds.
 - **No resident-call check.** That check inspects diffusers' `LTX2Pipeline`; H3 runs in SGLang.
 
 Measured on 2026-09-15, 4 of 8 H200 141 GB (Tokyo), image `h3-0.1.0-0ad70874cd6b` plus ffmpeg and CUDA `lib64` fixes:
@@ -153,6 +165,37 @@ Measured on 2026-09-15, 4 of 8 H200 141 GB (Tokyo), image `h3-0.1.0-0ad70874cd6b
 | Output | 1344x768, 124 frames, 5.17 s, H.264 + 32 kHz AAC | same |
 | Peak GPU memory (per GPU) | 95 GB | 97 GB |
 | Weights download | 144 GB in 198 s | +61 GB in 90 s |
+
+### Sharing the machine: GPU lists and GPU groups
+
+**`KUNO_SMOKE_GPUS`** gives the worker only the listed GPUs (nvidia-smi indices), so other work can run on the rest of
+an 8-GPU box at the same time:
+- the worker, preflight, `bench` and `determinism` get `--gpus "device=<list>"`;
+- `KUNO_H3_NUM_GPUS` is the list's length;
+- `samples.csv` samples only those GPUs.
+
+Unset, LTX gets every GPU and H3 the first `KUNO_SMOKE_MIN_GPUS`, as before. The script's own containers are named
+`kuno-smoke-<stamp>-*` and labelled `kuno-smoke=<stamp>`, and cleanup removes only those. Anything else running beside
+it needs other names, labels and ports: the gateway uses `KUNO_SMOKE_PORT` (18180), and an H3 worker's SGLang servers
+listen on 30010-30012, 31010-31012 and 32010-32012.
+
+**`KUNO_SMOKE_GROUPS`** runs the layout `kuno-app` gives a whole-server TD (`subnet/image/CVM.md` §6): one worker
+container per GPU group, all started at once against one gateway, each with its own profiles.
+
+```bash
+KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0,1,2,3:h3-turbo 4,5,6,7:h3" KUNO_SMOKE_PORT=18190 ~/gpu-test/ltx-smoke.sh
+```
+
+- **Syntax.** Each entry is `<GPU indices>:<profiles>`, and entries are separated by spaces. No GPU or profile may
+  appear twice. It replaces `KUNO_SMOKE_PROFILES` and `KUNO_SMOKE_GPUS`, and works with the `smoke` task only.
+- **Ports.** Worker *i* gets `KUNO_H3_FL2VA_URL=http://127.0.0.1:30010+10i`, `_REF2VA_URL` on 30011+10i and
+  `_TURBO_URL` on 30012+10i, as `kuno-app` assigns them. Its SGLang master and scheduler ports are 1000 and 2000 higher.
+- **Sequence.** Every worker must register before any job is submitted. Then each profile gets one job, in group order,
+  while all workers stay up. They stop together.
+- **Output.** Logs are `logs/worker-g<i>.log`. `results.json` gives each profile its `gpus` and `gpu_group`.
+- **One H3 load per group.** A group given two H3 variants (say `h3-turbo,h3`) exits at start, which is
+  `kuno-h3-worker`'s rule on 141 GB H200s and 180 GB B200s. That group's profiles are reported as failed.
+- **Tested.** Only with `KUNO_SMOKE_MOCK=1` so far (2026-09-17).
 
 ## Other tasks
 
@@ -197,7 +240,7 @@ Everything for one run is under `KUNO_SMOKE_DIR/runs/<UTC timestamp>/`:
 | `ltx-smoke-<stamp>.tar.gz` | `results/` below, packed. Send this one file back. |
 | `results/results.json` | Pass/fail per profile and overall, with timings and peak memory; details below. |
 | `results/state.tsv` | The raw facts the script recorded, one `key<TAB>value` per line; `results.json` is built from it. |
-| `results/samples.csv` | Once a second: host RAM total/used (KiB), and the busiest GPU's memory used/total (MiB) and utilization. |
+| `results/samples.csv` | Once a second: host RAM total/used (KiB), and the busiest GPU's memory used/total (MiB) and utilization. With `KUNO_SMOKE_GPUS` or `_GROUPS`, only the run's GPUs count. |
 | `results/weights.json` | Repo, resolved revision, folders and bytes downloaded, seconds, and what was skipped. |
 | `results/preflight.txt`, `preflight.json` | `kuno-preflight --no-tee --gateway …` inside the worker image. |
 | `results/plan-<profile>.txt` | `kuno-plan <profile> text_to_video …`. It prints the `cold` backend's `ltx_pipelines` command, which is informational under `real`. |
@@ -207,7 +250,7 @@ Everything for one run is under `KUNO_SMOKE_DIR/runs/<UTC timestamp>/`:
 | `results/jobs/<profile>.mp4` | The generated video. |
 | `results/jobs/<profile>.job.json` | Job id, params, status timeline, receipt summary, wall/queue/render/download seconds, SHA-256 against the receipt. |
 | `results/jobs/<profile>.ffprobe.json`, `.check.json` | ffprobe's output and the checks run on it. |
-| `results/logs/` | `gateway.log`, `worker-<profile>.log`, `job-<profile>.log`, `weights.log`, `pull.log`, `devkit.log`, and the stderr of preflight, plan and ffprobe. |
+| `results/logs/` | `gateway.log`, `worker-<profile>.log` (`worker-g<i>.log` with groups), `job-<profile>.log`, `weights.log`, `pull.log`, `devkit.log`, and the stderr of preflight, plan and ffprobe. |
 | `data/` | The gateway's data dir: dev keys, SQLite, blobs. Owned by uid 10001 and **not** in the tarball. |
 
 **`results.json`:**
@@ -217,7 +260,8 @@ Everything for one run is under `KUNO_SMOKE_DIR/runs/<UTC timestamp>/`:
   - `job_wall_s`, `job_queued_s`, `render_s_from_receipt`;
   - `video`, with its ffprobe summary;
   - `checks`;
-  - `peaks`: GPU MiB and host RAM GiB while that profile's worker ran.
+  - `peaks`: GPU MiB and host RAM GiB while that profile's worker ran;
+  - `gpus` and `gpu_group`: the worker's GPU list, and its group with `KUNO_SMOKE_GROUPS`.
 - `peaks_whole_run`, `host`, `images` (tags and image IDs), `settings`, `prerequisites`.
 
 **What the ffprobe check requires:**
@@ -249,6 +293,9 @@ All optional.
 | `KUNO_SMOKE_BENCH_ARGS` | `--time-budget 2h --check-determinism` | Extra `kuno-bench` flags |
 | `KUNO_SMOKE_CASES` | `3` | Golden cases per profile in the `determinism` task |
 | `KUNO_SMOKE_PROFILES` | `ltx-2.5-fast,ltx-2.5-pro` (H3: `h3`) | Profiles to test, in order; one worker container each |
+| `KUNO_SMOKE_GPUS` | unset: every GPU (H3: `0,1,2,3`) | The worker's GPUs as nvidia-smi indices ([above](#sharing-the-machine-gpu-lists-and-gpu-groups)) |
+| `KUNO_SMOKE_GROUPS` | unset | `"<gpus>:<profiles> ..."`: one worker per GPU group, all up at once, against one gateway |
+| `KUNO_SMOKE_TURBO_LORA_REPO`, `_TURBO_LORA_REVISION` | `lightx2v/Minimax-h3-Turbo`, `3ec17a32…` | Where `h3-turbo`'s 8-step LoRA comes from |
 | `KUNO_SMOKE_COUNTRY` | unset (H3: required) | The test customer's country, sent as `x-kuno-country`, and the worker's `KUNO_MINER_COUNTRY` |
 | `KUNO_SMOKE_PRIVACY` | `standard` (H3: `private`) | Private jobs go through the SDK, sealed to the enclave |
 | `KUNO_SMOKE_STORYBOARD` | unset | A storyboard JSON (`long_video/storyboards/`): `ltx-2.5-fast` renders it as one storyboard job |
@@ -284,6 +331,21 @@ KUNO_SMOKE_MOCK=1 KUNO_SMOKE_DIR=/tmp/gpu-smoke scripts/gpu-test/ltx-smoke.sh
 
 **What still runs:** devkit init, the gateway, preflight and plan, the resident-call check, worker registration, the
 Standard job, polling, download, ffprobe, `results.json`, the tarball and cleanup. Only the model itself is left out.
+
+The H3 image dry-runs the same way. The job is Private and goes through the SDK. The mock gateway image is the
+published one, since no local `kunoworld/gateway:local` build is needed:
+
+```bash
+KUNO_SMOKE_MOCK=1 KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0,1,2,3:h3-turbo 4,5,6,7:h3" \
+  KUNO_SMOKE_WORKER_IMAGE=ghcr.io/concil859856/kunoworld-worker:h3-0.1.0-69e34d62492b \
+  KUNO_SMOKE_GATEWAY_IMAGE=ghcr.io/concil859856/kunoworld-gateway:cc8e9fb2553d \
+  KUNO_SMOKE_DEVKIT_IMAGE=ghcr.io/concil859856/kunoworld-mock-worker:69e34d62492b KUNO_SMOKE_DIR=/tmp/gpu-smoke-h3 scripts/gpu-test/ltx-smoke.sh
+```
+
+On 2026-09-17 three dry runs passed:
+- `KUNO_SMOKE_PROFILES=h3-turbo,h3` with `KUNO_SMOKE_GPUS=0,1,2,3`;
+- the two groups above;
+- the default LTX run.
 
 It takes about a minute. Each worker registers in about 9 s, most of it loading the safety classifiers on the CPU, and
 each job takes about 6 s. `preflight` exits 1 ("no NVIDIA GPU"); that is recorded, not judged. `ltx-2.5-fast` shows the

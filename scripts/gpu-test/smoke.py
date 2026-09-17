@@ -721,6 +721,8 @@ def cmd_results(args) -> int:
             "plan_exit": _number(state.get(pre + "plan_exit")),
             "resident_call": {"pipeline_class": resident.get("pipeline_class"), "unexpected_kwargs": resident.get("unexpected_kwargs")},
             "worker_exit": state.get(pre + "worker_exit"),
+            "gpus": state.get(pre + "gpus"),
+            "gpu_group": _number(state.get(pre + "group")),
             "peaks": peaks(_number(state.get(pre + "worker_start_epoch")), _number(state.get(pre + "worker_stop_epoch"))),
         }
 

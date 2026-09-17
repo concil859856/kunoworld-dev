@@ -7,6 +7,8 @@
 #   KUNO_SMOKE_FAMILY=h3 GITHUB_TOKEN=... ./ltx-smoke.sh   MiniMax H3 instead: 4 GPUs, SGLang, the ungated FL2VA weights
 #   KUNO_SMOKE_TASK=bench ./ltx-smoke.sh                   kuno-bench instead of a job: the cost grid pricing needs
 #   KUNO_SMOKE_TASK=determinism ./ltx-smoke.sh             the same cases twice, leaf by leaf (VERIFIED_MODE.md Phase 0)
+#   KUNO_SMOKE_GPUS=4,5,6,7 ./ltx-smoke.sh                 the worker gets only these GPUs; other work can use the rest
+#   KUNO_SMOKE_GROUPS="0,1,2,3:h3-turbo 4,5,6,7:h3" ...    one worker per GPU group, all up at once (image/CVM.md §6)
 #
 # Everything runs in containers on 127.0.0.1 and nothing touches a chain: kuno-devkit init (mock-worker image), a dev
 # gateway on SQLite (gateway image), then for each profile in turn kuno-plan, one worker container with the simulated
@@ -116,6 +118,64 @@ BENCH_ARGS="${KUNO_SMOKE_BENCH_ARGS:---time-budget 2h --check-determinism}"
 CASE_COUNT="${KUNO_SMOKE_CASES:-3}"
 MIN_DISK_GB="${KUNO_SMOKE_MIN_DISK_GB:-200}"
 MIN_RAM_GB="${KUNO_SMOKE_MIN_RAM_GB:-64}"
+# h3-turbo is the fl2va checkpoint with LightX2V's 8-step 768p LoRA, which the worker loads from KUNO_H3_TURBO_LORA. It
+# is downloaded beside the H3 cache, at <models>/turbo/<file>, whenever the profiles include h3-turbo.
+TURBO_LORA_REPO="${KUNO_SMOKE_TURBO_LORA_REPO:-lightx2v/Minimax-h3-Turbo}"
+TURBO_LORA_REVISION="${KUNO_SMOKE_TURBO_LORA_REVISION:-3ec17a324ced54151364f24f8b5fb6bf7e26414f}" # measured 2026-09-16
+TURBO_LORA_FILE=minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors
+TURBO_LORA_PATH="$MOUNT/turbo/$TURBO_LORA_FILE"
+
+# The worker's GPUs as nvidia-smi indices, e.g. 4,5,6,7, so other work can use the rest of the machine. Unset: every GPU
+# for LTX, the first KUNO_SMOKE_MIN_GPUS for H3.
+GPUS="${KUNO_SMOKE_GPUS:-}"
+# One worker container per GPU group, all started together against one gateway, each with its own profiles and H3
+# ports: the layout kuno-app gives a whole-server TD (subnet/image/CVM.md §6). "0,1,2,3:h3-turbo 4,5,6,7:h3".
+GPU_GROUPS="${KUNO_SMOKE_GROUPS:-}"
+GROUP_GPUS=()
+GROUP_PROFILES=()
+valid_gpu_list() { [[ "$1" =~ ^[0-9]+(,[0-9]+)*$ ]]; }
+gpu_count() { printf '%s\n' "${1//,/$'\n'}" | grep -c .; }
+if [ -n "$GPUS" ] && ! valid_gpu_list "$GPUS"; then
+  echo "ltx-smoke: KUNO_SMOKE_GPUS must be GPU indices separated by commas, e.g. 4,5,6,7; got '$GPUS'" >&2 && exit 2
+fi
+if [ -n "$GPU_GROUPS" ]; then
+  if [ -n "${KUNO_SMOKE_PROFILES:-}" ] || [ -n "$GPUS" ]; then
+    echo "ltx-smoke: KUNO_SMOKE_GROUPS names every group's GPUs and profiles; leave KUNO_SMOKE_PROFILES and KUNO_SMOKE_GPUS unset" >&2 && exit 2
+  fi
+  if [ "$TASK" != smoke ]; then echo "ltx-smoke: KUNO_SMOKE_GROUPS needs KUNO_SMOKE_TASK=smoke" >&2 && exit 2; fi
+  PROFILES=""
+  for group_entry in $GPU_GROUPS; do
+    group_gpus="${group_entry%%:*}"
+    group_profiles="${group_entry#*:}"
+    if [ "$group_gpus" = "$group_entry" ] || [ -z "$group_profiles" ] || ! valid_gpu_list "$group_gpus"; then
+      echo "ltx-smoke: each KUNO_SMOKE_GROUPS entry is <GPU indices>:<profiles>, e.g. 0,1,2,3:h3-turbo; got '$group_entry'" >&2 && exit 2
+    fi
+    GROUP_GPUS+=("$group_gpus")
+    GROUP_PROFILES+=("$group_profiles")
+    PROFILES="${PROFILES:+$PROFILES,}$group_profiles"
+  done
+  # A GPU belongs to one worker, and a profile to one group: the job helper names its files by profile.
+  if [ -n "$(printf '%s\n' "${GROUP_GPUS[@]}" | tr ',' '\n' | sort | uniq -d)" ]; then
+    echo "ltx-smoke: KUNO_SMOKE_GROUPS lists a GPU in more than one group: $GPU_GROUPS" >&2 && exit 2
+  fi
+  if [ -n "$(printf '%s\n' "${PROFILES//,/$'\n'}" | sort | uniq -d)" ]; then
+    echo "ltx-smoke: KUNO_SMOKE_GROUPS lists a profile in more than one group: $GPU_GROUPS" >&2 && exit 2
+  fi
+fi
+# The worker's GPU list in a one-worker run: KUNO_SMOKE_GPUS, else H3's first MIN_GPUS, else empty (every GPU).
+worker_gpu_list() {
+  if [ -n "$GPUS" ]; then printf '%s' "$GPUS"
+  elif [ "$FAMILY" = h3 ]; then seq -s, 0 $((MIN_GPUS - 1)) | tr -d '\n'
+  fi
+}
+# Every GPU a worker of this run gets, for preflight and the memory samples; empty means every GPU.
+run_gpu_list() {
+  if [ ${#GROUP_GPUS[@]} -gt 0 ]; then printf '%s\n' "${GROUP_GPUS[@]}" | tr ',' '\n' | sort -n | paste -sd, -
+  else worker_gpu_list; fi
+}
+# docker's --gpus value for a GPU list.
+docker_gpus() { if [ -n "$1" ]; then printf '"device=%s"' "$1"; else printf all; fi; }
+has_profile() { case ",$1," in *",$2,"*) return 0 ;; esac; return 1; }
 
 RUN_STARTED=0
 MAIN_DONE=0
@@ -149,7 +209,7 @@ die() {
 
 container_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || true)" = true ]; }
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
-gpu_args() { if [ "$MOCK" != 1 ]; then printf '%s\n' --gpus all; fi; }
+gpu_args() { if [ "$MOCK" != 1 ]; then printf '%s\n' --gpus "$(docker_gpus "$(run_gpu_list)")"; fi; }
 
 # smoke.py inside an image, as the invoking user, with the results dir writable and the gateway data dir read-only.
 helper() {
@@ -270,7 +330,18 @@ check_prerequisites() {
       else
         pre_fail gpu-memory "$HOST_GPU has $HOST_GPU_MIB MiB; $FAMILY needs $MIN_GPU_MIB MiB per GPU"
       fi
-      if [ "$HOST_GPU_COUNT" -ge "$MIN_GPUS" ]; then
+      local lists=() list top problem=""
+      if [ ${#GROUP_GPUS[@]} -gt 0 ]; then lists=("${GROUP_GPUS[@]}"); elif [ -n "$GPUS" ]; then lists=("$GPUS"); fi
+      for list in ${lists[@]+"${lists[@]}"}; do
+        top="$(printf '%s\n' "${list//,/$'\n'}" | sort -n | tail -n 1)"
+        if [ "$top" -ge "$HOST_GPU_COUNT" ]; then problem="GPU $top does not exist: the host has $HOST_GPU_COUNT (indices 0-$((HOST_GPU_COUNT - 1)))" && break; fi
+        if [ "$(gpu_count "$list")" -lt "$MIN_GPUS" ]; then problem="GPUs $list are $(gpu_count "$list"); $FAMILY needs $MIN_GPUS in one worker" && break; fi
+      done
+      if [ -n "$problem" ]; then
+        pre_fail gpu-count "$problem"
+      elif [ ${#lists[@]} -gt 0 ]; then
+        pre_ok gpu-count "$HOST_GPU_COUNT on the host; worker GPUs: ${lists[*]} (at least $MIN_GPUS each)"
+      elif [ "$HOST_GPU_COUNT" -ge "$MIN_GPUS" ]; then
         pre_ok gpu-count "$HOST_GPU_COUNT (needs $MIN_GPUS)"
       else
         pre_fail gpu-count "$HOST_GPU_COUNT GPU(s); $FAMILY needs $MIN_GPUS in one worker"
@@ -357,7 +428,7 @@ begin_run() {
   state image.gateway "$GATEWAY_IMAGE"
   state image.devkit "$DEVKIT_IMAGE"
   local key
-  for key in FAMILY COUNTRY PRIVACY DURATION RESOLUTION ASPECT FPS AUDIO LTX_OFFLOAD WEIGHTS_VERIFY HF_REPO HF_REVISION GATEWAY_URL MODELS DATA HARDWARE_CLASS; do
+  for key in FAMILY COUNTRY PRIVACY DURATION RESOLUTION ASPECT FPS AUDIO LTX_OFFLOAD WEIGHTS_VERIFY HF_REPO HF_REVISION GATEWAY_URL MODELS DATA HARDWARE_CLASS GPUS GPU_GROUPS; do
     state "setting.$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')" "${!key}"
   done
   state host.kernel "$(uname -r)"
@@ -374,8 +445,10 @@ begin_run() {
 }
 
 # epoch, host RAM total and used (MemTotal - MemAvailable), and the busiest GPU's memory and utilization, every second.
+# With KUNO_SMOKE_GPUS or _GROUPS only this run's GPUs are sampled, so other work on the machine doesn't show up.
 start_sampler() {
-  local file="$RESULTS/samples.csv"
+  local file="$RESULTS/samples.csv" gpu_select=()
+  if [ -n "$GPUS" ] || [ ${#GROUP_GPUS[@]} -gt 0 ]; then gpu_select=(-i "$(run_gpu_list)"); fi
   printf 'epoch_s,mem_total_kib,mem_used_kib,gpu_mem_used_mib,gpu_mem_total_mib,gpu_util_pct\n' >"$file"
   (
     trap - EXIT INT TERM
@@ -384,7 +457,7 @@ start_sampler() {
       mem="$(awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } END { printf "%d,%d", t, t - a }' /proc/meminfo)"
       gpu=",,"
       if [ "$MOCK" != 1 ]; then
-        gpu="$(nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null |
+        gpu="$(nvidia-smi ${gpu_select[@]+"${gpu_select[@]}"} --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null |
           awk -F', *' 'BEGIN { u = -1 } $1 + 0 > u { u = $1 + 0; t = $2; g = $3 } END { if (u >= 0) printf "%s,%s,%s", u, t, g; else printf ",," }')"
       fi
       printf '%s,%s,%s\n' "$(date +%s)" "$mem" "${gpu:-,,}"
@@ -508,21 +581,30 @@ pull_images() {
 
 # H3: the SGLang servers resolve MiniMaxAI/MiniMax-H3 in a Hugging Face cache (HF_HUB_CACHE=/models/h3, offline), so this
 # writes that layout for the checkpoint variant each profile uses: FL2VA for h3 and h3-turbo, Ref2VA for h3-reference.
+# h3-turbo also gets its LoRA (TURBO_LORA_PATH). Files already there are skipped, so a prefetched cache costs seconds.
 fetch_h3_weights() {
-  local started code=0 patterns='"*.json","LICENSE","README.md"'
+  local started code=0 patterns='"*.json","LICENSE","README.md"' turbo=0
   started="$(now)"
   case ",$PROFILES," in *,h3,* | *,h3-turbo,*) patterns+=',"FL2VA/*"' ;; esac
   case ",$PROFILES," in *,h3-reference,*) patterns+=',"Ref2VA/*"' ;; esac
+  if has_profile "$PROFILES" h3-turbo; then turbo=1; fi
   docker run --rm --label "$LABEL" --name "$PREFIX-weights" --user "$(id -u):$(id -g)" \
     -e HF_TOKEN -e HF_HUB_OFFLINE=0 -e HF_HUB_DISABLE_TELEMETRY=1 -e HF_HUB_DISABLE_PROGRESS_BARS=1 \
     -e HF_XET_HIGH_PERFORMANCE=1 -e HOME=/tmp -v "$MODELS:$MOUNT" -v "$RESULTS:/out" --entrypoint python "$WORKER_IMAGE" -W ignore -c "
-import json, time
-from huggingface_hub import snapshot_download
+import json, os, time
+from huggingface_hub import hf_hub_download, snapshot_download
 started = time.time()
 path = snapshot_download('$HF_REPO', revision='$HF_REVISION', cache_dir='$MOUNT', allow_patterns=[$patterns], max_workers=$DOWNLOAD_WORKERS)
 print('snapshot', path)
-json.dump({'repo': '$HF_REPO', 'revision_requested': '$HF_REVISION', 'revision': path.rstrip('/').rsplit('/', 1)[-1],
-           'allow_patterns': [$patterns], 'seconds': round(time.time() - started, 1)}, open('/out/weights.json', 'w'), indent=2)
+summary = {'repo': '$HF_REPO', 'revision_requested': '$HF_REVISION', 'revision': path.rstrip('/').rsplit('/', 1)[-1],
+           'allow_patterns': [$patterns], 'seconds': round(time.time() - started, 1)}
+if $turbo:
+    lora_started = time.time()
+    lora = hf_hub_download('$TURBO_LORA_REPO', '$TURBO_LORA_FILE', revision='$TURBO_LORA_REVISION', local_dir='$MOUNT/turbo')
+    print('turbo LoRA', lora)
+    summary['turbo_lora'] = {'repo': '$TURBO_LORA_REPO', 'revision': '$TURBO_LORA_REVISION', 'path': lora,
+                             'bytes': os.path.getsize(lora), 'seconds': round(time.time() - lora_started, 1)}
+json.dump(summary, open('/out/weights.json', 'w'), indent=2)
 " 2>&1 | tee "$LOGS/weights.log" || code=$?
   if [ "$code" != 0 ]; then die "downloading the H3 weights failed (exit $code; see logs/weights.log). Run again to resume"; fi
   state timing.weights_download_s "$(since "$started")"
@@ -616,15 +698,17 @@ run_preflight() {
   fi
 }
 
-run_profile() {
-  local p="$1"
-  local pre="profile.$p" name="$PREFIX-worker-$p" audio_flag=() code started registered gpus mode=text_to_video extra=()
-  if [ "$p" = h3-reference ]; then mode=reference_to_video; fi
-  if { [ -n "$STORYBOARD" ] || [ -n "$PLAN_BRIEF" ]; } && [ "$p" = ltx-2.5-fast ]; then mode=storyboard; fi
-  say "$p"
-  if [ "$AUDIO" != 1 ]; then audio_flag=(--no-audio); fi
+# The job mode a profile's test job uses.
+profile_mode() {
+  if [ "$1" = h3-reference ]; then printf reference_to_video
+  elif { [ -n "$STORYBOARD" ] || [ -n "$PLAN_BRIEF" ]; } && [ "$1" = ltx-2.5-fast ]; then printf storyboard
+  else printf text_to_video; fi
+}
 
-  code=0
+# kuno-plan for the test job, and for LTX the resident-call check. Both are recorded, never fatal.
+plan_profile() {
+  local p="$1" mode="$2" pre="profile.$1" audio_flag=() code=0
+  if [ "$AUDIO" != 1 ]; then audio_flag=(--no-audio); fi
   docker run --rm --label "$LABEL" --entrypoint kuno-plan "$WORKER_IMAGE" "$p" "$mode" \
     --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --models-dir "$MOUNT" \
     ${audio_flag[@]+"${audio_flag[@]}"} >"$RESULTS/plan-$p.txt" 2>"$LOGS/plan-$p.stderr" || code=$?
@@ -642,45 +726,46 @@ run_profile() {
     *) warn "the resident-call check itself failed (exit $code; logs/resident-call-$p.stderr)" ;;
   esac
   fi
+}
 
+# One worker container serving `profiles` (comma-separated) on `gpus` (nvidia-smi indices; empty: every GPU). `index`
+# numbers the GPU group: H3's SGLang servers of worker i listen on 30010+10i (fl2va), 30011+10i (ref2va) and 30012+10i
+# (turbo), with master and scheduler ports 1000 and 2000 higher, as kuno-app assigns them (image/CVM.md §6).
+start_worker() {
+  local name="$1" profiles="$2" gpus="$3" index="$4"
   local worker=(
     -d --label "$LABEL" --name "$name" --network host
     -v "$DATA:/var/lib/kuno/data:ro" -v "$MODELS:$MOUNT:ro"
     -e KUNO_DATA_DIR=/var/lib/kuno/data -e KUNO_GATEWAY_URL="$GATEWAY_URL"
-    -e KUNO_TEE=mock -e KUNO_BACKEND="$BACKEND" -e KUNO_PROFILES="$p"
+    -e KUNO_TEE=mock -e KUNO_BACKEND="$BACKEND" -e KUNO_PROFILES="$profiles"
     -e KUNO_WEIGHTS_ALLOW_UNPINNED=1 -e KUNO_WEIGHTS_VERIFY="$WEIGHTS_VERIFY"
     -e KUNO_MOCK_QUOTE_KEY_FILE=/var/lib/kuno/data/mock_quote.key -e KUNO_PROVENANCE=off
   )
   if [ "$FAMILY" = h3 ]; then
-    # One worker on four GPUs (Ulysses 4); NCCL needs the host's shared memory. SGLang's log is kept on a dev box.
+    # Ulysses over the worker's GPUs; NCCL needs the host's shared memory. SGLang's log is kept on a dev box.
     # KUNO_MINER_COUNTRY: H3 is licensed by territory, so the gateway refuses to register it from an excluded
     # (or unknown) country. Here it is the country this test machine runs in.
-    worker+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$MIN_GPUS" -e KUNO_SGLANG_LOG=inherit)
+    worker+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$(gpu_count "$gpus")" -e KUNO_SGLANG_LOG=inherit
+      -e KUNO_H3_FL2VA_URL="http://127.0.0.1:$((30010 + 10 * index))" -e KUNO_H3_REF2VA_URL="http://127.0.0.1:$((30011 + 10 * index))"
+      -e KUNO_H3_TURBO_URL="http://127.0.0.1:$((30012 + 10 * index))")
+    if has_profile "$profiles" h3-turbo; then worker+=(-e KUNO_H3_TURBO_LORA="$TURBO_LORA_PATH"); fi
     if [ -n "$COUNTRY" ]; then worker+=(-e KUNO_MINER_COUNTRY="$COUNTRY"); fi
-    gpus="$(seq -s, 0 $((MIN_GPUS - 1)))"
   else
     worker+=(-e KUNO_LTX_MODELS_DIR="$MOUNT" -e KUNO_LTX_OFFLOAD="$LTX_OFFLOAD")
-    gpus=all
   fi
   if [ "$MOCK" != 1 ]; then
-    if [ "$gpus" = all ]; then worker+=(--gpus all); else worker+=(--gpus "\"device=$gpus\""); fi
-    worker+=(-e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
+    worker+=(--gpus "$(docker_gpus "$gpus")" -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
   fi
   if [ -n "${KUNO_MODEL_DIGEST:-}" ]; then worker+=(-e KUNO_MODEL_DIGEST); fi
+  docker run "${worker[@]}" "$WORKER_IMAGE" >/dev/null
+}
 
-  started="$(now)"
-  state "$pre.worker_start_epoch" "$started"
-  if ! docker run "${worker[@]}" "$WORKER_IMAGE" >/dev/null; then
-    state "$pre.error" "docker run of the worker failed"
-    bad "could not start the worker container"
-    return 1
-  fi
-  info "worker started (KUNO_BACKEND=$BACKEND, KUNO_TEE=mock); waiting for it to register"
-
-  local deadline last_note body status
-  deadline=$(($(date +%s) + REGISTER_TIMEOUT))
+# Waits until the gateway routes `p` to an enclave. Returns 1, with the reason in the state, if the worker container
+# exits first or `deadline` (epoch seconds) passes. `log` is the name the worker's log gets under logs/.
+wait_registered() {
+  local name="$1" p="$2" mode="$3" started="$4" deadline="$5" log="$6"
+  local pre="profile.$p" last_note body status registered=0
   last_note=$(date +%s)
-  registered=0
   while :; do
     body="$(curl -fsS ${COUNTRY_HEADER[@]+"${COUNTRY_HEADER[@]}"} "$GATEWAY_URL/v1/route?mode=$mode&profile_id=$p&privacy=$PRIVACY" 2>/dev/null || true)"
     case "$body" in *"\"profile_id\":\"$p\""*) case "$body" in *'"enclaves":[{'*) registered=1 ;; esac ;; esac
@@ -688,63 +773,152 @@ run_profile() {
     if ! container_running "$name"; then
       status="$(docker inspect -f 'exit code {{.State.ExitCode}}, OOMKilled {{.State.OOMKilled}}' "$name" 2>/dev/null || true)"
       docker logs --tail 25 "$name" 2>&1 | sed 's/^/        /'
-      state "$pre.error" "the worker exited before registering ($status); see logs/worker-$p.log"
+      state "$pre.error" "the worker exited before registering ($status); see logs/$log"
       state "$pre.worker_exit" "$status"
       break
     fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
-      state "$pre.error" "the worker did not register within ${REGISTER_TIMEOUT}s; see logs/worker-$p.log"
+      state "$pre.error" "the worker did not register within ${REGISTER_TIMEOUT}s; see logs/$log"
       break
     fi
     if [ $(($(date +%s) - last_note)) -ge 60 ]; then
-      info "still waiting after $(since "$started")s; worker: $(docker logs --tail 1 "$name" 2>&1 | cut -c1-150)"
+      info "still waiting for $p after $(since "$started")s; worker: $(docker logs --tail 1 "$name" 2>&1 | cut -c1-150)"
       last_note=$(date +%s)
     fi
     sleep 3
   done
+  if [ "$registered" != 1 ]; then return 1; fi
+  state "$pre.registered_epoch" "$(now)"
+  state "$pre.cold_start_to_registered_s" "$(since "$started")"
+  ok "$p registered $(since "$started")s after docker run"
+}
 
-  local result=1
-  if [ "$registered" = 1 ]; then
-    state "$pre.registered_epoch" "$(now)"
-    state "$pre.cold_start_to_registered_s" "$(since "$started")"
-    ok "registered $(since "$started")s after docker run"
+# One job for `p` through the gateway, the MP4 downloaded, ffprobed and checked. Returns 0 when every check passed.
+run_job() {
+  local p="$1" mode="$2" pre="profile.$1" extra=() code=0
+  if [ "$mode" = reference_to_video ]; then
+    mkdir -p "$RESULTS/inputs" && cp "$REFERENCE_IMAGE" "$RESULTS/inputs/"
+    extra+=(--reference-image "/out/inputs/$(basename "$REFERENCE_IMAGE")")
+  fi
+  if [ -n "$PROMPT_OVERRIDE" ]; then extra+=(--prompt "$PROMPT_OVERRIDE"); fi
+  if [ -n "$STORYBOARD" ] && [ "$p" = ltx-2.5-fast ]; then
+    mkdir -p "$RESULTS/inputs" && cp "$STORYBOARD" "$RESULTS/inputs/storyboard.json"
+    extra+=(--storyboard /out/inputs/storyboard.json)
+  elif [ -n "$PLAN_BRIEF" ] && [ "$p" = ltx-2.5-fast ]; then
+    mkdir -p "$RESULTS/inputs" && cp "$PLAN_BRIEF" "$RESULTS/inputs/brief.json"
+    extra+=(--plan /out/inputs/brief.json)
+  fi
+  helper "$GATEWAY_IMAGE" run-job --gateway "$GATEWAY_URL" --data /var/lib/kuno/data --profile "$p" \
+    --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --audio "$AUDIO" \
+    --country "$COUNTRY" --privacy "$PRIVACY" --mode "$mode" ${extra[@]+"${extra[@]}"} --out /out/jobs --timeout "$JOB_TIMEOUT" 2>&1 | tee "$LOGS/job-$p.log" || code=$?
+  if [ "$code" != 0 ]; then
+    state "$pre.error" "the job did not produce a video (see logs/job-$p.log and the worker log)"
+    return 1
+  fi
+  if ! ffprobe -v error -print_format json -show_format -show_streams "$JOBS/$p.mp4" >"$JOBS/$p.ffprobe.json" 2>"$LOGS/ffprobe-$p.log"; then
+    state "$pre.error" "ffprobe could not read $p.mp4 ($(tail -n 1 "$LOGS/ffprobe-$p.log"))"
+    return 1
+  fi
+  code=0
+  helper "$GATEWAY_IMAGE" check-video --job "/out/jobs/$p.job.json" --ffprobe "/out/jobs/$p.ffprobe.json" \
+    --out "/out/jobs/$p.check.json" || code=$?
+  if [ "$code" != 0 ]; then
+    state "$pre.error" "ffprobe checks failed (jobs/$p.check.json)"
+    return 1
+  fi
+}
 
-    if [ "$mode" = reference_to_video ]; then
-      mkdir -p "$RESULTS/inputs" && cp "$REFERENCE_IMAGE" "$RESULTS/inputs/"
-      extra+=(--reference-image "/out/inputs/$(basename "$REFERENCE_IMAGE")")
-    fi
-    if [ -n "$PROMPT_OVERRIDE" ]; then extra+=(--prompt "$PROMPT_OVERRIDE"); fi
-    if [ -n "$STORYBOARD" ] && [ "$p" = ltx-2.5-fast ]; then
-      mkdir -p "$RESULTS/inputs" && cp "$STORYBOARD" "$RESULTS/inputs/storyboard.json"
-      extra+=(--storyboard /out/inputs/storyboard.json)
-    elif [ -n "$PLAN_BRIEF" ] && [ "$p" = ltx-2.5-fast ]; then
-      mkdir -p "$RESULTS/inputs" && cp "$PLAN_BRIEF" "$RESULTS/inputs/brief.json"
-      extra+=(--plan /out/inputs/brief.json)
-    fi
-    code=0
-    helper "$GATEWAY_IMAGE" run-job --gateway "$GATEWAY_URL" --data /var/lib/kuno/data --profile "$p" \
-      --duration "$DURATION" --resolution "$RESOLUTION" --aspect "$ASPECT" --fps "$FPS" --audio "$AUDIO" \
-      --country "$COUNTRY" --privacy "$PRIVACY" --mode "$mode" ${extra[@]+"${extra[@]}"} --out /out/jobs --timeout "$JOB_TIMEOUT" 2>&1 | tee "$LOGS/job-$p.log" || code=$?
-    if [ "$code" != 0 ]; then
-      state "$pre.error" "the job did not produce a video (see logs/job-$p.log and logs/worker-$p.log)"
-    elif ! ffprobe -v error -print_format json -show_format -show_streams "$JOBS/$p.mp4" >"$JOBS/$p.ffprobe.json" 2>"$LOGS/ffprobe-$p.log"; then
-      state "$pre.error" "ffprobe could not read $p.mp4 ($(tail -n 1 "$LOGS/ffprobe-$p.log"))"
-    else
-      code=0
-      helper "$GATEWAY_IMAGE" check-video --job "/out/jobs/$p.job.json" --ffprobe "/out/jobs/$p.ffprobe.json" \
-        --out "/out/jobs/$p.check.json" || code=$?
-      if [ "$code" = 0 ]; then result=0; else state "$pre.error" "ffprobe checks failed (jobs/$p.check.json)"; fi
-    fi
+# Stops a worker container, keeps its log as logs/<log> and removes it.
+stop_worker() {
+  local name="$1" log="$2" profiles="$3" p
+  docker stop -t 60 "$name" >/dev/null 2>&1 || true
+  for p in ${profiles//,/ }; do state "profile.$p.worker_stop_epoch" "$(now)"; done
+  docker logs "$name" >"$LOGS/$log" 2>&1 || true
+  docker rm -f "$name" >/dev/null 2>&1 || true
+}
+
+run_profile() {
+  local p="$1" mode gpus started name="$PREFIX-worker-$1" result=1
+  mode="$(profile_mode "$p")"
+  gpus="$(worker_gpu_list)"
+  say "$p"
+  plan_profile "$p" "$mode"
+
+  started="$(now)"
+  state "profile.$p.worker_start_epoch" "$started"
+  state "profile.$p.gpus" "${gpus:-all}"
+  if ! start_worker "$name" "$p" "$gpus" 0; then
+    state "profile.$p.error" "docker run of the worker failed"
+    bad "could not start the worker container"
+    return 1
+  fi
+  info "worker started (KUNO_BACKEND=$BACKEND, KUNO_TEE=mock, GPUs ${gpus:-all}); waiting for it to register"
+  if wait_registered "$name" "$p" "$mode" "$started" $(($(date +%s) + REGISTER_TIMEOUT)) "worker-$p.log"; then
+    if run_job "$p" "$mode"; then result=0; fi
   else
     bad "the worker never registered"
   fi
 
-  docker stop -t 60 "$name" >/dev/null 2>&1 || true
-  state "$pre.worker_stop_epoch" "$(now)"
-  docker logs "$name" >"$LOGS/worker-$p.log" 2>&1 || true
-  docker rm -f "$name" >/dev/null 2>&1 || true
+  stop_worker "$name" "worker-$p.log" "$p"
   if [ "$result" = 0 ]; then ok "$p passed"; else bad "$p failed"; fi
   return "$result"
+}
+
+# KUNO_SMOKE_GROUPS: every group's worker starts at once, the way kuno-app starts one container per GPU group; each
+# profile then gets its job while all the workers stay up, and they stop together.
+run_groups() {
+  local i p name started deadline failed=0 started_at=() up=()
+  say "GPU groups: $GPU_GROUPS"
+  for i in "${!GROUP_GPUS[@]}"; do
+    for p in ${GROUP_PROFILES[i]//,/ }; do plan_profile "$p" "$(profile_mode "$p")"; done
+  done
+  for i in "${!GROUP_GPUS[@]}"; do
+    name="$PREFIX-worker-g$i"
+    started="$(now)"
+    started_at[i]="$started"
+    up[i]=1
+    for p in ${GROUP_PROFILES[i]//,/ }; do
+      state "profile.$p.worker_start_epoch" "$started"
+      state "profile.$p.gpus" "${GROUP_GPUS[i]}"
+      state "profile.$p.group" "$i"
+    done
+    if start_worker "$name" "${GROUP_PROFILES[i]}" "${GROUP_GPUS[i]}" "$i"; then
+      info "group $i: worker started on GPUs ${GROUP_GPUS[i]} for ${GROUP_PROFILES[i]}"
+    else
+      up[i]=0
+      for p in ${GROUP_PROFILES[i]//,/ }; do state "profile.$p.error" "docker run of the group $i worker failed"; done
+      bad "group $i: could not start the worker container"
+    fi
+  done
+  deadline=$(($(date +%s) + REGISTER_TIMEOUT))
+  for i in "${!GROUP_GPUS[@]}"; do
+    if [ "${up[i]}" != 1 ]; then continue; fi
+    for p in ${GROUP_PROFILES[i]//,/ }; do
+      if ! wait_registered "$PREFIX-worker-g$i" "$p" "$(profile_mode "$p")" "${started_at[i]}" "$deadline" "worker-g$i.log"; then
+        up[i]=0
+        bad "group $i: $p never registered"
+        break
+      fi
+    done
+  done
+  for i in "${!GROUP_GPUS[@]}"; do
+    for p in ${GROUP_PROFILES[i]//,/ }; do
+      if [ "${up[i]}" = 1 ] && run_job "$p" "$(profile_mode "$p")"; then
+        ok "group $i: $p passed"
+      else
+        bad "group $i: $p failed"
+        failed=1
+      fi
+    done
+  done
+  local stopping=()
+  for i in "${!GROUP_GPUS[@]}"; do
+    docker stop -t 60 "$PREFIX-worker-g$i" >/dev/null 2>&1 &
+    stopping+=($!)
+  done
+  wait "${stopping[@]}" 2>/dev/null || true
+  for i in "${!GROUP_GPUS[@]}"; do stop_worker "$PREFIX-worker-g$i" "worker-g$i.log" "${GROUP_PROFILES[i]}"; done
+  return "$failed"
 }
 
 # The worker image with the weights mounted and /out writable, running one of its own tools instead of the job loop:
@@ -760,14 +934,16 @@ worker_tool() {
     -v "$MODELS:$MOUNT:ro" -v "$RESULTS:/out"
     -e USER=kuno-smoke -e HOME=/tmp -e KUNO_WEIGHTS_ALLOW_UNPINNED=1
   )
+  local gpus
+  gpus="$(worker_gpu_list)"
   if [ "$FAMILY" = h3 ]; then
-    args+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$MIN_GPUS" -e KUNO_SGLANG_LOG=inherit)
+    args+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$(gpu_count "$gpus")" -e KUNO_SGLANG_LOG=inherit)
+    if has_profile "$PROFILES" h3-turbo; then args+=(-e KUNO_H3_TURBO_LORA="$TURBO_LORA_PATH"); fi
   else
     args+=(-e KUNO_LTX_MODELS_DIR="$MOUNT")
   fi
   if [ "$MOCK" != 1 ]; then
-    if [ "$FAMILY" = h3 ]; then args+=(--gpus "\"device=$(seq -s, 0 $((MIN_GPUS - 1)))\""); else args+=(--gpus all); fi
-    args+=(-e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
+    args+=(--gpus "$(docker_gpus "$gpus")" -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
   fi
   if [ -n "${KUNO_MODEL_DIGEST:-}" ]; then args+=(-e KUNO_MODEL_DIGEST); fi
   docker run "${args[@]}" --entrypoint "$entrypoint" "$WORKER_IMAGE" "$@"
@@ -884,9 +1060,13 @@ case "$TASK" in
     devkit_init
     start_gateway
     run_preflight
-    for profile in "${PROFILE_LIST[@]}"; do
-      run_profile "$profile" || true
-    done
+    if [ ${#GROUP_GPUS[@]} -gt 0 ]; then
+      run_groups || true
+    else
+      for profile in "${PROFILE_LIST[@]}"; do
+        run_profile "$profile" || true
+      done
+    fi
     ;;
 esac
 MAIN_DONE=1
