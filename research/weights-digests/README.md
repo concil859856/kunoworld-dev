@@ -13,14 +13,12 @@ recipes started pinning it.
 | `ltx-2.5-fast@O1.rtx-5090-32gb.x1.fp8-cast` | `ltx-2.5-distilled/fp8-cast/1` | `97aa95b16ccd51c0fc328b76acbb0d5e9f1e1665a3dac23d9e5f4ce48530f6c4` |
 | `ltx-2.5-4k` | `ltx-2.5-dfr/bf16/1` (reads `diffusion_decoder`) | `84bad8c6f981c2c05f662947bf749798712597b568f8f99eca2f7b8a1a8ec554` (subnet `25d8d06`, image `ltx-0.1.0-25d8d065d34a`) |
 
-**`ltx-2.5-4k` has no digest yet, and its recipe changed on 2026-09-17.**
-- **What changed.** The resident backend now decodes 4K with LTX-2.5's diffusion decoder. So `ltx-2.5-dfr/bf16/1`'s
-  `include` is now `ltx-2.5-fast`'s plus `diffusion_decoder/` (0.83 GB). It no longer lists `temporal_latent_upsampler/`,
-  which nothing reads.
-- **Compute it before a manifest lists `ltx-2.5-4k`.** Use a box whose download includes `diffusion_decoder/` at the
-  revision above:
-  `python -m kuno_protocol.devkit weights-digest --profile ltx-2.5-4k --models-dir <dir>`.
-- **What it covers.** `ltx-2.5-fast`'s 41 files plus `diffusion_decoder/config.json` and its safetensors file.
+**`ltx-2.5-4k`'s recipe changed on 2026-09-17, and its digest above was computed after the change.**
+- **What changed:** the resident backend decodes 4K with LTX-2.5's diffusion decoder. `ltx-2.5-dfr/bf16/1`'s
+  `include` is now `ltx-2.5-fast`'s plus `diffusion_decoder/` (0.83 GB). It no longer lists
+  `temporal_latent_upsampler/`, which nothing reads.
+- **What the digest covers:** `ltx-2.5-fast`'s 41 files plus `diffusion_decoder/config.json` and its safetensors file.
+- **Where:** computed on the 4K check box with the image built at subnet `25d8d06`.
 
 **When these go stale:**
 - **What they depend on:** the recipe identity (`precision_recipes.json`: precision, transformer subfolder,
