@@ -264,3 +264,70 @@ and decoded lengths are the real code's.
   context than the previous shot had.
 - **Fresh shots are not pixel-identical to a worker render with the same seed.** All shots go through
   `LTX2ConditionPipeline`, which draws noise in packed order, while the worker's text-to-video uses `LTX2Pipeline`.
+
+## Audio-to-video and retake through the worker: `run_edit_modes_worker.py`
+
+The storyboard pin, generalized, now carries two more modes in the product worker (`subnet/worker`,
+`backends/ltx_pinning.py` and `backends/ltx_edit.py`). Before, both crashed on the GPU with `TypeError`: the worker sent
+`audio_path` and `video_path` keywords that no diffusers 0.40 LTX-2 pipeline accepts.
+
+- **`audio_to_video`** (`ltx-2.5-pro`): the source sound is encoded to audio latents and held under the whole render. The
+  job returns the source's own samples.
+- **`retake`** (`ltx-2.5-fast` and `-pro`): the source clip is encoded, and every token outside `[start_s, end_s)` is
+  held. The window is rounded out to whole latents. The job returns the source's samples outside the regenerated span.
+
+The driver needs no downloads: it synthesizes a speech-like signal with ffmpeg, and renders the clip it retakes. It runs
+four jobs through `LtxResidentBackend`:
+
+1. a 5 s source clip;
+2. its middle 2 s retaken (1.5 s to 3.5 s);
+3. the same window with `regenerate_video: false`;
+4. a 4 s audio-to-video on `ltx-2.5-pro`, with the source's first frame as `first_frame`.
+
+It checks each job's output: frame counts, sound length, held tokens exact and at t = 0, source samples returned
+exactly, held frames at or above 28 dB PSNR against the source, and the MP4's sound lag. It also runs the audio VAE round
+trip and measures the GPU memory of encoding the source on its own. The module docstring lists every threshold.
+`RESULT: PASS` and exit 0 when all of them hold.
+
+On the GPU box, with the weights `ltx-smoke.sh` downloaded (both profiles: audio-to-video needs `transformer_full/`) and
+this repo's `subnet/` copied over:
+
+```bash
+OUT=$KUNO_SMOKE_DIR/edit-modes/$(date -u +%Y%m%dT%H%M%SZ) && mkdir -p "$OUT"
+# Any image with diffusers 0.40 works: the worker's code comes from the mounted source, ahead of the image's own.
+IMAGE=${KUNO_SMOKE_WORKER_IMAGE:-ghcr.io/concil859856/kunoworld-worker:ltx-0.1.0-0ad70874cd6b}
+docker run --rm --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp -e USER=kuno -e HF_HUB_OFFLINE=1 \
+  -v ~/subnet:/src:ro -v ~/gpu-test/long_video:/lv:ro -v "$KUNO_SMOKE_DIR/models/ltx-2.5:/models/ltx-2.5:ro" -v "$OUT:/out" \
+  -e PYTHONPATH=/src/worker/src:/src/protocol/src --entrypoint python "$IMAGE" -u /lv/run_edit_modes_worker.py --out /out \
+  2>&1 | tee "$OUT/run.log"
+```
+
+- **`--only retake,retake-audio`** skips the `ltx-2.5-pro` load. `--a2v-duration 2` halves the pro render.
+- **Output:** `retake-source.mp4`, `retake.mp4`, `retake-audio.mp4`, `a2v.mp4`, `a2v-source.wav` and `edit_modes.json`.
+  The JSON holds per-frame PSNR, the splice jump ratios, the lag, the round-trip correlation, timings and peak memory.
+- **CPU dry run** (the flow on tiny random weights, about 20 s; the picture and sound checks are skipped): add
+  `-v /video/subnet/worker/tests:/t:ro`, put `/t` on `PYTHONPATH`, drop `--gpus` and the weights, and pass `--tiny`.
+
+**Estimates, not measurements:**
+
+| Item | Estimate |
+|---|---|
+| Source clip | about 15 s |
+| Each retake | a single 8-step pass at full size, about 25–30 s with the encode |
+| Weight loads | about 20 s for fast, then 1–2 min for pro |
+| 4 s pro audio-to-video | about 4 min (2 s took 103 s on 2026-09-15) |
+| Peak memory, retakes | the text-to-video line plus about 1.5 GiB for the 5 s source |
+| Peak memory, pro | unmeasured with guidance |
+
+On `CUDA out of memory`, use `--a2v-duration 2`.
+
+**Only the GPU run can settle these:**
+
+- **The audio encoder's STFT size.** diffusers' config doesn't record it. `AUDIO_N_FFT = 1024` is ltx-core's default
+  and the LTX-2 family's. A round-trip log-mel correlation well under 0.6 means it is wrong.
+- **Whether the model follows context.** Does LTX-2.5 follow a held sound track, and continue a held picture into and
+  out of a retake window without a visible seam? Watch `retake.mp4` around 1.3 s and 3.7 s, and listen at the splice.
+- **VAE round-trip quality of held frames.** The 28 dB threshold is a guess, as is how far the window's influence
+  reaches through the decoder.
+- **Memory.** The encode's measured memory against `quantized.source_encode_gib`, and the pro render's peak with a held
+  audio track.
