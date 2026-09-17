@@ -1,7 +1,7 @@
 # The safety gate on benign content: false positives and margins, 2026-09-16
 
 First measurement of the safety gate's classifiers on real content. The run used `kuno-safety-eval` (subnet
-`worker/src/kuno_worker/safety_eval.py`) inside the worker image `kuno-worker:ltx` (subnet `da0af19`), with the
+`worker/src/kuno_worker/safety_eval.py`) inside the worker image `kuno-worker:ltx` (subnet `528d31d`), with the
 classifiers and thresholds it ships:
 - Qwen3Guard-Gen-0.6B for prompts;
 - Freepik's nsfw_image_detector and CLIP ViT-L/14 zero-shot for frames;

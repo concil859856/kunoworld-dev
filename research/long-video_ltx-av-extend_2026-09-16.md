@@ -96,7 +96,7 @@ Each 5 s shot took 13.7 s to generate (4.3 s half-size pass, 9.3 s refine) and 1
 ## Addendum: the product worker path on a GPU, and a memory bug it found (same day, 16:40–17:07 UTC)
 
 Rental: a MassedCompute RTX PRO 6000 (94.97 GiB usable), about $1.03. The run used `scripts/gpu-test/long_video/run_storyboard_worker.py`
-through the worker's own `LtxResidentBackend` (subnet `91b0581`, source mounted into
+through the worker's own `LtxResidentBackend` (subnet `adeb676`, source mounted into
 `vocence/kunoworld-worker:ltx-0.1.0-0ad70874cd6b`).
 
 **Storyboards through the worker: pass.**
@@ -137,7 +137,7 @@ request, but a single 20 s 720p clip ran out of memory. Peaks, bf16, no offload,
 
 Rental: a MassedCompute RTX PRO 6000, about $0.65. Published images: worker `ltx-0.1.0-1ca142565a29`
 (sha256:ae99f6b8…), gateway `8ee717432b9d`, mock-worker `1ca142565a29`. Driven by `ltx-smoke.sh` with
-`KUNO_SMOKE_STORYBOARD` (dev commit `7c46a65`).
+`KUNO_SMOKE_STORYBOARD` (dev commit `cd4a083`).
 
 | Run | Mode | Result |
 |---|---|---|
@@ -146,13 +146,13 @@ Rental: a MassedCompute RTX PRO 6000, about $0.65. Published images: worker `ltx
 | a plain 11 s 720p clip | Standard | rendered 265 frames with no out-of-memory error (the new cap's longest), **but FAIL**: 11.605 s of audio over 11.042 s of video |
 
 **The audio overrun** was an encoder bug in single clips. The vocoder returns more audio than frames for long clips, and
-`apad` plus `-shortest` let ffmpeg cut it half a second late. Fixed in subnet `9b873ef`: the samples are cut or padded
+`apad` plus `-shortest` let ffmpeg cut it half a second late. Fixed in subnet `562f4ad`: the samples are cut or padded
 to frames / fps and the file is capped with `-t`. Storyboards stitch their own audio and were exact. The fix has not
 been re-run on a GPU; a local test with the measured lengths gives 11.041 s of audio over 11.042 s of video.
 
 ## Addendum 3: retake and audio-to-video on the pinning mechanism (2026-09-17 01:16–01:24 UTC)
 
-**Why.** Before subnet `89568ae`, both modes crashed on the GPU: the worker sent `audio_path` and `video_path`
+**Why.** Before subnet `da1dc51`, both modes crashed on the GPU: the worker sent `audio_path` and `video_path`
 keywords that no diffusers 0.40 LTX-2 pipeline accepts. Both now render on the storyboard pinning mechanism
 (`backends/ltx_pinning.py`, `ltx_edit.py`; spec in `subnet/PROTOCOL.md` "Edits: retake and audio-to-video").
 
@@ -200,7 +200,7 @@ Clips: `data/gpu-tests/ltx-2.5/repro-20260917T0118_edit-*.mp4` and `repro-202609
 
 ## Addendum 4: the chunked source encode, and an 18 s retake at the cap (2026-09-17 12:18–12:47 UTC)
 
-**What changed** (subnet `6c43b02`, `backends/ltx_chunked_encode.py`):
+**What changed** (subnet `a1597eb`, `backends/ltx_chunked_encode.py`):
 - **Encode:** a retake's source is encoded as frame 0, then 8 frames at a time. The causal convolutions' last input
   frames carry between chunks, so encode memory no longer grows with length.
 - **Admission:** it counts the encode's peak beside the weights, not on top of the render (the encode frees before
@@ -245,7 +245,7 @@ spread. The check now takes the mean (1% of spread) and a 25% maximum.
 
 ## Addendum 5: `ltx-2.5-4k` renders, 1440p on an RTX PRO 6000 (2026-09-17 14:20–14:33 UTC)
 
-**What changed** (subnet `25d8d06`): `ltx-2.5-4k` had no working pipeline. It now renders distilled latents at
+**What changed** (subnet `2448860`): `ltx-2.5-4k` had no working pipeline. It now renders distilled latents at
 2560x1408 or 3840x2176, then decodes them with diffusers 0.40's `LTX2VideoDiffusionDecodePipeline`, LTX-2.5's diffusion
 decoder. The decoder runs with exact chunked attention (`backends/ltx_diffusion_decode.py`) and its default tiles
 (768 px every 704, 80 frames every 56).
@@ -316,7 +316,7 @@ Standard (fal's list).
 
 ## Addendum 7: 2160p 4 s under the refit model (2026-09-17 15:45–15:58 UTC)
 
-The refit memory model (subnet `69e34d6`) admits 2160p for 4 s on the RTX PRO 6000. That cell was unmeasured, and a
+The refit memory model (subnet `d620301`) admits 2160p for 4 s on the RTX PRO 6000. That cell was unmeasured, and a
 straight line through the 2 s and 3 s decode peaks put it near 93.1 GiB, so it was run under normal admission. Image
 `ltx-0.1.0-69e34d62492b`; about 13 min, about $0.47.
 

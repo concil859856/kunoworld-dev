@@ -1120,7 +1120,7 @@ With the enhancer on the GPU, the measured limit was 12 s at 720p (14 s ran out 
 
 ## 11. The implementation on a GPU, through the worker's own code (2026-09-16 23:44 – 09-17 00:05 UTC)
 
-Rental: MassedCompute RTX PRO 6000 Blackwell (94.97 GiB usable), about 20 min, about $0.75. Subnet `d32b8ed` source
+Rental: MassedCompute RTX PRO 6000 Blackwell (94.97 GiB usable), about 20 min, about $0.75. Subnet `98799c4` source
 mounted into `vocence/kunoworld-worker:ltx-0.1.0-c8493625f42e` (same dependencies). No gateway: the driver
 `scripts/gpu-test/long_video/run_director_worker.py` calls `LtxResidentBackend` and the worker's own plan methods
 (`Worker._checked_plan`, so repair, the single retry and the image's real safety classifiers all ran). Load 12.2 s,
@@ -1195,7 +1195,7 @@ The card advertises (24 fps) 720p 16:9 and 9:16 up to 18 s, 4:3 20 s, 1:1 18 s a
 Rental: MassedCompute RTX PRO 6000, about 25 min in total, shared with the edit-mode run in
 `long-video_ltx-av-extend_2026-09-16.md` (addendum 3), about $0.90.
 - **Images:** worker `ltx-0.1.0-89568ae64d7e` (`sha256:60b95290…`), gateway `cc8e9fb2553d`, mock-worker `89568ae64d7e`.
-- **Driver:** `ltx-smoke.sh` with `KUNO_SMOKE_PLAN` (dev `32e588d`). The Python SDK plans the brief through the gateway,
+- **Driver:** `ltx-smoke.sh` with `KUNO_SMOKE_PLAN` (dev `4b37716`). The Python SDK plans the brief through the gateway,
   then renders the plan as a storyboard in the same privacy mode.
 
 | Run | Plan | Storyboard job | Result |
