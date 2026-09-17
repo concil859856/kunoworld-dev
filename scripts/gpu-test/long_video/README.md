@@ -377,7 +377,7 @@ The driver renders one clip per `--clips` entry through `LtxResidentBackend`, on
 3. with `--repeat`, the first clip again from the same seed.
 
 It asks admission first. A clip the card's memory plan refuses is recorded with the reason and not rendered. On an
-RTX PRO 6000 that is every 2160p clip and 1440p beyond 4 s (estimated).
+RTX PRO 6000 that is 1440p beyond 10 s and 2160p beyond 4 s at 24 fps (the table below).
 
 It checks each rendered clip:
 - **frames:** the render's, the MP4's and the profile's frame counts agree;
@@ -406,6 +406,8 @@ docker run --rm --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp -e USER=kuno 
   - `--clips 1440p:2,2160p:2` makes shorter clips.
   - `--fps 48` renders every frame at 48 fps, which doubles the tokens.
   - `--offload model` streams weights for a smaller card, slowly.
+  - `--calibrate` renders every clip even where admission refuses it and records an out-of-memory error instead of
+    stopping, to refit the memory model (the driver's docstring says from which fields).
 - **Output:**
   - `4k-1440p.mp4`, `4k-2160p.mp4` and `4k-repeat.mp4`;
   - `4k.json`, which holds each clip's checks, seconds per phase (`latent_render`, `video_decode`, `audio_decode`) and for
@@ -415,23 +417,43 @@ docker run --rm --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp -e USER=kuno 
   `-v /video/subnet/worker/tests:/t:ro`, put `/t` on `PYTHONPATH`, drop `--gpus` and the weights, and pass `--tiny`. It
   passed on 2026-09-17 in `kuno-worker:ltx` with the source mounted.
 
-**Estimates, not measurements** (H200, 139.8 GiB reported):
+**Measured on 2026-09-17** (RTX PRO 6000 Blackwell Server Edition, 94.97 GiB; image `ltx-0.1.0-25d8d065d34a`; text-to-video
+with sound, 24 fps, 16:9; `--repeat` for 1440p 4 s, then `--calibrate` for the rest). 66.95 GiB loaded. Peaks are torch's
+allocated GiB. Estimates are the refitted model's:
 
-| Item | Estimate |
-|---|---|
-| Load | as `ltx-2.5-fast`, plus 0.8 GiB for the decoder |
-| Render peak | 1440p 4 s: 92.8 GiB; 2160p 3 s: 109.3 GiB. The distilled line, fitted below 51,000 tokens and likely high for a render without the VAE's decode |
-| Decode peak | 1440p 4 s: 91.7 GiB; 2160p 3 s: 97.1 GiB. 66.96 GiB of weights plus the counted decode and a fifth |
-| Render time | unknown. The transformer's attention is global, so 2160p costs about 4.3x a 1080p clip of the same length per step |
-| Decode time | unknown. Each stage-5 query's key box holds about 7x its 11x11x11 window, and the boxes are copied |
+| Clip | Frames | Latent tokens | Render peak (estimate) | Decode peak (estimate) | Render, decode seconds |
+|---|---|---|---|---|---|
+| 1440p 4 s | 97 | 45,760 | 73.73 (77.97, the text-generation floor) | 80.90 (83.19) | 44.9, 44.6 |
+| 1440p 8 s | 193 | 88,000 | 79.62 (81.46) | 88.68 (90.71) | 114.7, 97.6 |
+| 1440p 10 s | 241 | 109,120 | 82.57 (84.46) | 91.25 (93.39) | 160.7, 120.4 |
+| 2160p 2 s | 49 | 57,120 | 75.31 (77.97) | 80.84 (83.14) | 61.0, 45.1 |
+| 2160p 3 s | 73 | 81,600 | 78.72 (80.55) | 87.06 (89.18) | 102.3, 65.5 |
+| 2160p 5 s | 121 | 130,560 | not recorded (87.50) | out of memory, 93.98 allocated (97.82, refused) | |
 
-**Only this run can settle:**
-- **The render line at 4K tokens.** 57,120 to 130,560 tokens on an H200. If the render peaks well under its estimate,
-  refit it from `memory_gib.latent_render`, and the envelope grows.
-- **The decode's memory.** The count of live tensors can't see the allocator or SDPA's workspace. Also whether CUDA picks
-  a fused SDPA kernel for the boolean masks: the math kernel would materialize each batch's scores and exceed the estimate.
-  Lower `ATTENTION_BUDGET_BYTES` if the decode runs out of memory.
-- **The decode's speed** against the job timeout (3,600 s). If it is too slow, NATTEN vendored into the image would be the
-  next step. That needs `kernels` and the kernel files baked in, since the image may not download them.
+- **The render:** 0.40 GiB + 1.395 GiB per 10,000 tokens above the weights, every point within 0.02 GiB. The old estimate
+  was `ltx-2.5-fast`'s line (3.32 + 4.6), whose peaks include a VAE decode this render never runs: 92.8 to 122.0 GiB for
+  these clips. `ltx-2.5-dfr/bf16/1` now has its own line, 0.5 + 1.42, with the 1.5 GiB overhead 1.73-1.89 GiB above each
+  peak.
+- **The decode:** 8.4 to 10.8 GiB under the old estimates (89.2 to 102.0 GiB). It is still the replay of the decoder's tiles
+  (`ltx_diffusion_decode.py`), with its per-token, per-ghost-cell and workspace figures fitted to these peaks (0.53x the old
+  ones), a 0.5 GiB margin and the 1.5 GiB overhead: 2.03-2.30 GiB above each peak. A constant plus bytes per pixel-frame
+  missed the same peaks by up to 1.68 GiB, because a tile's work stops growing at 80 frames.
+- **The 1440p 4 s repeat** gave the same frames and the same peaks.
+- **The decode's kernel:** the peaks are under the meta-device count of live tensors, which holds no score matrices, so
+  CUDA's SDPA did not fall back to materializing the boolean masks' scores.
+- **Time:** a 10 s 1440p clip took 285 s in all, and 3 s of 2160p 172 s, far inside the 3,600 s job timeout.
+
+**What the RTX PRO 6000 now serves** (the envelope, both aspect ratios): 1440p up to 10 s at 24 and 25 fps and 5 s at 48 and
+50 fps; 2160p up to 4 s at 24 and 25 fps and 2 s at 48 and 50 fps. Measured: 1440p up to 10 s at 24 fps (and so 5 s at
+48 fps, the same 241 frames), 2160p up to 3 s at 24 fps (and 25 fps, the same frames). Extrapolated: 2160p 4 s, 25 and 50 fps
+beyond those frame counts, and 9:16. The fit puts 2160p 4 s at a 90.3 GiB peak, below the 1440p 10 s peak that ran, and its
+estimate leaves 2.1 GiB of the card free. `subnet/MINING.md` §3b has the H200 and H100.
+
+**Still open:**
+- **2160p 4 s, 9:16, 25 and 50 fps** have not run. The first to measure is 2160p 4 s, the envelope's most extrapolated
+  cell on this card.
+- **Image-to-video and keyframes** (one full-size pass of 8 sigmas, with the images encoded) are unmeasured; the render
+  line is text-to-video's.
+- **Beyond 109,120 tokens** (an H200's 2160p) the render line is extrapolated.
 - **The pictures.** Does the diffusion decoder's detail hold at 2160p? Are the tile seams (every 704 px and 56 frames)
   invisible? Does the sound stay in sync?

@@ -3,7 +3,7 @@ and sound, with its latent render and its diffusion decode timed apart and their
 estimates. Nothing is downloaded but the weights ltx-smoke.sh already fetched.
 
     python run_4k_worker.py --out /out [--models-dir /models/ltx-2.5] [--clips 1440p:4,2160p:3] [--fps 24] [--repeat]
-    python run_4k_worker.py --out /out --calibrate --clips 1440p:8,1440p:12,2160p:2,2160p:4   # refit the memory model
+    python run_4k_worker.py --out /out --calibrate --clips 1440p:10,2160p:2,2160p:3,2160p:5   # refit the memory model
     python run_4k_worker.py --out /out --tiny   # a CPU dry run on tiny random weights: the flow (needs subnet/worker/tests on PYTHONPATH)
 
 Jobs, text-to-video with sound, 16:9, one per `--clips` entry (<resolution>:<seconds>), in order, on one loaded ltx-2.5-4k:
@@ -23,14 +23,23 @@ memory checks, which a CPU can't make):
   size          the MP4 is the profile's width x height (--tiny: 320x192)
   sound         the MP4 has a sound track, as long as its picture within a frame
   render peak   on a GPU: the latent render's peak allocated memory (the text encoder, both passes, the upsampler) within
-                admission's render estimate (quantized.MemoryPlan.estimate_gib: the distilled recipe's measured line,
-                extrapolated from 51,000 to these tokens)
+                admission's render estimate (quantized.MemoryPlan.estimate_gib: ltx-2.5-dfr/bf16/1's own line, fitted to
+                this driver's --calibrate run of 2026-09-17)
   decode peak   on a GPU: the diffusion decode's peak allocated memory within admission's decode estimate
-                (MemoryPlan.decode_gib: the decoder's shapes and a count of its live tensors, never measured on a GPU)
+                (MemoryPlan.decode_gib: the decoder's shapes replayed tile by tile, with figures fitted to the same run)
   repeat        with --repeat: the repeated clip's frames are the first clip's, byte for byte
 Recorded as well: seconds per phase (latent_render, video_decode, audio_decode) and for the whole job (which adds the MP4
 encode), each phase's peak allocated and reserved GiB, the load, the card's envelope for ltx-2.5-4k as its plan computes it,
 and the decoder's attention processor, budget and tiling.
+
+--calibrate is for refitting the 4K memory model. Every clip renders even where admission refuses it
+(`admission.admission_would_refuse`), an out-of-memory error is recorded with the peak it reached (`oom`,
+`peak_allocated_gib`) before the next clip runs, and the peak checks are not judged. Put the clip expected to fail last, so
+no measured clip follows an out-of-memory error. Refit the render's line (precision_recipes.json, ltx-2.5-dfr/bf16/1) from
+memory_gib.latent_render less load.allocated_gib over admission.tokens, and the decode's figures (ltx_diffusion_decode.py)
+from memory_gib.video_decode against decode_phases; worker/tests/test_ltx_4k_plan.py pins the clips that ran. The current
+model is from the run of 2026-09-17 (RTX PRO 6000, image ltx-0.1.0-25d8d065d34a): 1440p for 4, 8 and 10 s and 2160p for 2
+and 3 s at 24 fps, and 2160p for 5 s, which ran out of memory in the decode.
 """
 
 from __future__ import annotations
