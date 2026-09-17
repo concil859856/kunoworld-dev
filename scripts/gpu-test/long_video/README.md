@@ -276,18 +276,33 @@ The storyboard pin, generalized, now carries two more modes in the product worke
 - **`retake`** (`ltx-2.5-fast` and `-pro`): the source clip is encoded, and every token outside `[start_s, end_s)` is
   held. The window is rounded out to whole latents. The job returns the source's samples outside the regenerated span.
 
-The driver needs no downloads: it synthesizes a speech-like signal with ffmpeg, and renders the clip it retakes. It runs
-four jobs through `LtxResidentBackend`:
+The driver needs no downloads: it synthesizes a speech-like signal with ffmpeg, renders the clip it retakes, and uses a
+test pattern for the long retake. It runs five jobs through `LtxResidentBackend`, in one process:
 
 1. a 5 s source clip;
 2. its middle 2 s retaken (1.5 s to 3.5 s);
 3. the same window with `regenerate_video: false`;
-4. a 4 s audio-to-video on `ltx-2.5-pro`, with the source's first frame as `first_frame`.
+4. the longest retake admission accepts at this size and frame rate (`--long-retake auto`: 18 s of 720p at 24 fps on an
+   RTX PRO 6000), of a test pattern, its middle 2 s regenerated;
+5. a 4 s audio-to-video on `ltx-2.5-pro`, with the source's first frame as `first_frame`. Loading it evicts
+   `ltx-2.5-fast`.
 
 It checks each job's output: frame counts, sound length, held tokens exact and at t = 0, source samples returned
-exactly, held frames at or above 28 dB PSNR against the source, and the MP4's sound lag. It also runs the audio VAE round
-trip and measures the GPU memory of encoding the source on its own. The module docstring lists every threshold.
+exactly, held frames at or above 28 dB PSNR against the source, the MP4's sound lag, and each job's peak allocated memory
+against admission's estimate. It also runs the audio VAE round trip. The module docstring lists every threshold.
 `RESULT: PASS` and exit 0 when all of them hold.
+
+**The source encode.** A retake's source is encoded in 8-frame chunks that give the whole-clip encode's latents
+(`subnet/worker/src/kuno_worker/backends/ltx_chunked_encode.py`). Unchunked, the first run (2026-09-17) measured
+12.07 GiB for 5 s of 720p, growing with length. The driver measures the chunked encode on its own, at 5 s and for the
+long retake, against `quantized.source_encode_gib` (2.43 GiB at 1280x704, whatever the length). At 5 s it also measures
+the old whole-clip encode, and compares the two encodes' tokens. It records the loaded encoder's layout and its cached
+activations per pixel (522 for diffusers' default layout, which the estimate assumes).
+
+**Eviction.** Every load after the first must start with none of the previous profile's modules alive and under 1 GiB
+allocated. The first run's single process ran out of memory loading `ltx-2.5-pro` at 94.19 GiB. Its module-level encode
+measurement kept a renderer built from every `ltx-2.5-fast` component alive after the eviction. The steps are functions
+now, and the dry run below fails that check if a reference is put back.
 
 On the GPU box, with the weights `ltx-smoke.sh` downloaded (both profiles: audio-to-video needs `transformer_full/`) and
 this repo's `subnet/` copied over:
@@ -302,21 +317,26 @@ docker run --rm --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp -e USER=kuno 
   2>&1 | tee "$OUT/run.log"
 ```
 
-- **`--only retake,retake-audio`** skips the `ltx-2.5-pro` load. `--a2v-duration 2` halves the pro render.
-- **Output:** `retake-source.mp4`, `retake.mp4`, `retake-audio.mp4`, `a2v.mp4`, `a2v-source.wav` and `edit_modes.json`.
-  The JSON holds per-frame PSNR, the splice jump ratios, the lag, the round-trip correlation, timings and peak memory.
-- **CPU dry run** (the flow on tiny random weights, about 20 s; the picture and sound checks are skipped): add
-  `-v /video/subnet/worker/tests:/t:ro`, put `/t` on `PYTHONPATH`, drop `--gpus` and the weights, and pass `--tiny`.
+- **`--only retake,retake-audio,retake-long`** skips the `ltx-2.5-pro` load. `--a2v-duration 2` halves the pro render.
+  `--long-retake 10` picks the long retake's length instead of admission's longest.
+- **Output:** `retake-source.mp4`, `retake.mp4`, `retake-audio.mp4`, `retake-long.mp4` (and `retake-long-source.mp4`),
+  `a2v.mp4`, `a2v-source.wav` and `edit_modes.json`. The JSON holds per-frame PSNR, the splice jump ratios, the lag, the
+  round-trip correlation, timings, peak memory against admission's estimate (`admission`), the encode measurements
+  (`source_encode`, `jobs.retake-long.encode`) and what each load found still allocated (`loads`).
+- **CPU dry run** (the flow on tiny random weights, about 30 s; the picture, sound and memory checks are skipped): add
+  `-v /video/subnet/worker/tests:/t:ro`, put `/t` on `PYTHONPATH`, drop `--gpus` and the weights, and pass
+  `--tiny --long-retake 3`. It passed on 2026-09-17 in `kuno-worker:ltx` with the source mounted.
 
 **Estimates, not measurements:**
 
 | Item | Estimate |
 |---|---|
 | Source clip | about 15 s |
-| Each retake | a single 8-step pass at full size, about 25–30 s with the encode |
+| Each 5 s retake | a single 8-step pass at full size: 22.8 s measured (2026-09-17) |
+| The 18 s retake | about 2–3 min; admission estimates a 93.5 GiB peak (16 s of text-to-video measured 90.0) |
 | Weight loads | about 20 s for fast, then 1–2 min for pro |
 | 4 s pro audio-to-video | about 4 min (2 s took 103 s on 2026-09-15) |
-| Peak memory, retakes | the text-to-video line plus about 1.5 GiB for the 5 s source |
+| Peak memory, retakes | the text-to-video line plus 0.25 GiB of held tokens; the encode alone about 68.9 GiB at 720p (66.18 of weights) |
 | Peak memory, pro | unmeasured with guidance |
 
 On `CUDA out of memory`, use `--a2v-duration 2`.
@@ -329,5 +349,11 @@ On `CUDA out of memory`, use `--a2v-duration 2`.
   out of a retake window without a visible seam? Watch `retake.mp4` around 1.3 s and 3.7 s, and listen at the splice.
 - **VAE round-trip quality of held frames.** The 28 dB threshold is a guess, as is how far the window's influence
   reaches through the decoder.
-- **Memory.** The encode's measured memory against `quantized.source_encode_gib`, and the pro render's peak with a held
-  audio track.
+- **Memory.** The chunked encode's peak against `quantized.source_encode_gib`. The estimate is the CPU's tensor count
+  scaled by the GPU-to-CPU ratio of the unchunked encode (1.374), plus 17%. Also whether LTX-2.5's encoder has diffusers'
+  default layout (`cache_values_per_pixel` 522), the 18 s retake's peak against admission, and the pro render's peak with
+  a held audio track.
+- **Chunked tokens on the GPU.** On the CPU (float32) the chunked encode differs from the whole-clip encode by at most
+  2.5e-6 against a spread of 0.27. That is rounding: a convolution over a shorter input sums in another order. bf16 and
+  cuDNN's per-shape algorithms may round more. Compare `tokens_against_whole_clip` with the retake's held-frame PSNR
+  (35.8 dB at the lowest in the first run).

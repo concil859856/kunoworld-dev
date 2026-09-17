@@ -1,20 +1,25 @@
 """Audio-to-video and retake through the worker's own LtxResidentBackend on a GPU, with the checks a viewer or listener would
-otherwise make. Nothing is downloaded: the sound is synthesized with ffmpeg and the clip to retake is rendered first.
+otherwise make, and the GPU memory of encoding a retake's source against what admission counts. Nothing is downloaded: the
+sound is synthesized with ffmpeg, the clip to retake is rendered first, and the long retake's source is a test pattern.
 
     python run_edit_modes_worker.py --out /out [--models-dir /models/ltx-2.5] [--resolution 720p] [--only retake,a2v]
-    python run_edit_modes_worker.py --out /out --tiny     # a CPU dry run on tiny random weights: the flow, not the pictures
+    python run_edit_modes_worker.py --out /out --tiny --long-retake 3   # a CPU dry run on tiny random weights: the flow
 
-Jobs, in this order (ltx-2.5-fast first, then ltx-2.5-pro, so the weights load once each):
-  source         a 5 s text-to-video clip with sound on ltx-2.5-fast: the clip every retake starts from
+Jobs, in this order (ltx-2.5-fast first, then ltx-2.5-pro, so the weights load once each, in one process):
+  source         a 5 s text-to-video clip with sound on ltx-2.5-fast: the clip the retakes start from
   retake         its middle 2 s (1.5 s to 3.5 s) regenerated from a new prompt, picture and sound
   retake-audio   the same window with regenerate_video false: every video token held, the sound regenerated
+  retake-long    the longest retake admission accepts at this size and frame rate (--long-retake auto; 18 s of 720p at
+                 24 fps on an RTX PRO 6000), of a test-pattern clip with a tone, its middle 2 s regenerated
   a2v            ltx-2.5-pro (the only profile offering it) from a speech-like signal over a little melody, from 0.5 s in,
-                 with the source clip's first frame as first_frame
+                 with the source clip's first frame as first_frame. Loading it evicts ltx-2.5-fast.
 
-Checks (`edit_modes.json`, RESULT: PASS when all hold; --tiny skips the ones about pictures and sound, which random
-weights can't pass):
+Checks (`edit_modes.json`, RESULT: PASS when all hold; --tiny skips the ones about pictures, sound and memory, which random
+weights on a CPU can't pass):
   every job      frames == the job's frame count in the render and the MP4; the MP4's sound track as long as its picture
-                 (within a frame); held tokens bit-identical after denoising and shown at timestep 0 in every pass
+                 (within a frame); held tokens bit-identical after denoising and shown at timestep 0 in every pass;
+                 on a GPU, the job's peak allocated memory within admission's estimate (quantized.admit: the larger of
+                 the render's and the encode's peaks, plus the held tokens)
   a2v            the returned samples are the source's, exactly; the MP4's AAC track still lines up with the source (best
                  lag within 5 ms, correlation > 0.9); the audio VAE round trip (encode, decode, vocoder) resembles the
                  source (log-mel correlation > 0.6), which checks ltx_pinning.AUDIO_N_FFT against the real checkpoint
@@ -23,19 +28,31 @@ weights can't pass):
                  job conforms it); the window changed (its mean PSNR below the held frames' lowest); no click at the
                  splice (sample jump at each end within 8x the typical step)
   retake-audio   every frame near-identical to the source (PSNR >= 28 dB); samples outside the span identical
-Also recorded: wall time, peak GPU memory per job, and the GPU memory encoding the source took on its own against
-quantized.source_encode_gib's estimate (the number admission refuses retakes by; unmeasured until this runs).
+  retake-long    samples outside the span identical; held-frame PSNR is recorded, not checked (a test pattern's fine
+                 lines are the VAE's worst case)
+  source encode  (`source_encode`, and `encode` in retake-long) the worker's chunked encode (ltx_chunked_encode) on its
+                 own: its peak over the weights within quantized.source_encode_gib; at 5 s, its tokens against the
+                 whole-clip encode's (`vae.encode`, as the worker encoded before) within 5% of their spread at most (a
+                 misaligned chunk differs by the whole spread, rounding by far less), with both peaks, a 16-frame-chunk
+                 peak, the loaded encoder's layout and its cached activations per pixel (522 for diffusers' default layout)
+  loads          every load after the first starts with none of the evicted profile's modules alive and, on a GPU, under
+                 1 GiB still allocated. On 2026-09-17 the ltx-2.5-pro load ran out of memory at 94.19 GiB: this driver
+                 had measured the encode at module level, so its `renderer` (an LTX2PinnedPipeline built from every
+                 ltx-2.5-fast component) outlived the eviction. Every step is a function now, and Recording keeps
+                 host copies and lets go of its adapter when the store unloads it.
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import logging
 import subprocess
 import sys
 import time
 import uuid
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -48,7 +65,7 @@ from kuno_worker.backends.base import GenerationTask, InputFile
 from kuno_worker.backends.ltx_edit import decode_audio, decode_frames, fit_samples
 from kuno_worker.backends.ltx_resident import LtxResidentBackend
 from kuno_worker.backends.media_tools import ffmpeg_exe
-from kuno_worker.backends.quantized import latent_tokens, source_encode_gib
+from kuno_worker.backends.quantized import _longest_fitting, latent_tokens, source_encode_gib, source_held_gib
 from kuno_worker.backends.resident import PipelineResult
 
 parser = argparse.ArgumentParser()
@@ -58,8 +75,9 @@ parser.add_argument("--resolution", default="720p")
 parser.add_argument("--fps", type=int, default=24)
 parser.add_argument("--seed", type=int, default=1234)
 parser.add_argument("--offload", default="auto")
-parser.add_argument("--a2v-duration", type=float, default=4.0, help="ltx-2.5-pro renders 30 guided steps: about 100 s per 2 s at 720p")
-parser.add_argument("--only", default="retake,retake-audio,a2v", help="comma-separated: retake, retake-audio, a2v")
+parser.add_argument("--a2v-duration", type=float, default=4.0, help="ltx-2.5-pro renders 30 guided steps: about 58 s per output second at 720p")
+parser.add_argument("--long-retake", default="auto", help="seconds, or auto: the longest retake admission accepts here (none without a memory plan)")
+parser.add_argument("--only", default="retake,retake-audio,retake-long,a2v", help="comma-separated: retake, retake-audio, retake-long, a2v")
 parser.add_argument("--tiny", action="store_true", help="CPU dry run on tiny random weights (needs subnet/worker/tests on PYTHONPATH)")
 args = parser.parse_args()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -71,10 +89,14 @@ FAST, PRO = PROFILES["ltx-2.5-fast"], PROFILES["ltx-2.5-pro"]
 ONLY = set(args.only.split(","))
 QUALITY = not args.tiny
 PSNR_HELD_DB = 28.0
+# A load after an eviction starts with the evicted weights gone: the CUDA context and allocator bookkeeping aren't allocations.
+EVICTED_LEFT_GIB = 1.0
+# Chunked tokens against the whole-clip encode's, as a share of their spread: a misaligned chunk would differ by about 1.
+ENCODE_MATCH_SPREAD = 0.05
 cuda = torch.cuda.is_available()
 out = Path(args.out)
 out.mkdir(parents=True, exist_ok=True)
-summary: dict = {"args": vars(args), "jobs": {}}
+summary: dict = {"args": vars(args), "loads": [], "jobs": {}}
 
 
 def save() -> None:
@@ -108,6 +130,16 @@ def speech_like(path: Path, seconds: float) -> None:
 def test_pattern_clip(path: Path, width: int, height: int, seconds: float) -> None:
     ffmpeg("-f", "lavfi", "-i", f"testsrc2=size={width}x{height}:rate={args.fps}:duration={seconds:g}", "-f", "lavfi", "-i",
            f"sine=frequency=220:sample_rate=48000:duration={seconds:g}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path))
+
+
+def conformed_source(path: Path, width: int, height: int, seconds: float) -> tuple[np.ndarray, np.ndarray]:
+    """The frames and samples a retake of `seconds` holds from `path`, fitted as the job fits them (ltx_edit.render_edit)."""
+    frames = ltx_num_frames(seconds, args.fps)
+    pictures = decode_frames(path, fps=args.fps, width=width, height=height, count=frames)
+    if len(pictures) < frames:
+        pictures = np.concatenate([pictures, np.repeat(pictures[-1:], frames - len(pictures), axis=0)])
+    sound = fit_samples(decode_audio(path, sample_rate=48_000, duration_s=frames / args.fps), round(frames / args.fps * 48_000))
+    return pictures, sound
 
 
 # ---------------------------------------------------------------- measures
@@ -151,21 +183,65 @@ def log_mel(samples: np.ndarray, rate: int) -> np.ndarray:
 # ---------------------------------------------------------------- the backend
 
 
+def on_host(value):
+    """`value` with every tensor in it copied to host memory: a raw result kept for the checks must not keep GPU memory
+    (the text-to-video pipeline returns its sound as a CUDA tensor)."""
+    if hasattr(value, "detach"):
+        return value.detach().to("cpu")
+    if isinstance(value, dict):
+        return {key: on_host(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(on_host(item) for item in value)
+    return value
+
+
 class Recording:
-    """The loaded adapter, keeping each render's raw result (frames and samples before encoding)."""
+    """The loaded adapter, keeping a host copy of each render's raw result (frames and samples before encoding). When the
+    model store evicts it, it lets go of the adapter and the copy, so nothing here keeps the evicted weights alive."""
 
     def __init__(self, adapter):
         self.adapter, self.last = adapter, None
 
     def __call__(self, **call):
-        self.last = self.adapter(**call)
-        return self.last
+        result = self.adapter(**call)
+        self.last = on_host(result)
+        return result
+
+    def unload(self) -> None:
+        adapter, self.adapter, self.last = self.adapter, None, None
+        adapter.unload()
 
     def __getattr__(self, name):
-        return getattr(self.adapter, name)
+        adapter = self.__dict__.get("adapter")
+        if adapter is None:
+            raise AttributeError(f"{name}: this pipeline was unloaded")
+        return getattr(adapter, name)
 
 
 recordings: dict[str, Recording] = {}
+loaded_modules: list = []  # weak references to every loaded profile's pipeline components
+
+
+def recorded(profile, build) -> Recording:
+    """Loads through `build`, noting first what of the previous load is still alive and allocated: the store has evicted
+    it by now (capacity 1), so neither should be."""
+    gc.collect()
+    if cuda:
+        torch.cuda.synchronize()
+    summary["loads"].append({
+        "profile": profile.id, "allocated_before_gib": gib(torch.cuda.memory_allocated()) if cuda else None,
+        "evicted_modules_alive": sum(ref() is not None for ref in loaded_modules),
+    })
+    started = time.perf_counter()
+    adapter = build(profile)
+    summary["loads"][-1]["seconds"] = round(time.perf_counter() - started, 1)
+    components = next(iter(adapter.pipelines.values())).components.values()
+    loaded_modules[:] = [weakref.ref(module) for module in components if isinstance(module, torch.nn.Module)]
+    recordings[profile.id] = Recording(adapter)
+    save()
+    return recordings[profile.id]
+
+
 if args.tiny:
     from kuno_worker.backends.runtimes import LtxAdapter
     from ltx_storyboard_doubles import TinyPinnedRenderer, tiny_pipelines
@@ -174,9 +250,7 @@ if args.tiny:
     size = (320, 192)
 
     def load(profile):
-        adapter = LtxAdapter(tiny_pipelines(audio_ch_mult=(1, 1, 1)), device="cpu", renderer=lambda p, device: TinyPinnedRenderer(p))
-        recordings[profile.id] = Recording(adapter)
-        return recordings[profile.id]
+        return recorded(profile, lambda _: LtxAdapter(tiny_pipelines(audio_ch_mult=(1, 1, 1)), device="cpu", renderer=lambda p, device: TinyPinnedRenderer(p)))
 else:
     from kuno_worker.backends.runtimes import ltx_loader
 
@@ -184,11 +258,15 @@ else:
     base_loader = ltx_loader(Path(args.models_dir), offload=args.offload, weights_verify="size")
 
     def load(profile):
-        recordings[profile.id] = Recording(base_loader(profile))
-        return recordings[profile.id]
+        return recorded(profile, base_loader)
 
 
 backend = LtxResidentBackend(None, Path("/tmp/kuno-work"), loader=load, offload=args.offload)
+
+
+def edit_plan(profile):
+    """The memory plan the backend admits an edit by, or None (a CPU)."""
+    return backend.memory_plan(profile) or backend._edit_plan(profile)
 
 
 def task_for(profile, mode: Mode, prompt: str, duration: float, inputs: list[tuple[InputRole, Path, dict]], options: dict | None = None, seed: int | None = None):
@@ -205,8 +283,23 @@ def task_for(profile, mode: Mode, prompt: str, duration: float, inputs: list[tup
                           seed=args.seed if seed is None else seed, width=width, height=height, inputs=files, options=options or {})
 
 
-def run(name: str, task: GenerationTask) -> tuple[dict, dict, bytes]:
-    """Renders `task`, writes <name>.mp4, and returns (record, raw result, MP4)."""
+def admission(task: GenerationTask) -> dict | None:
+    """What quantized.admit estimates for `task`'s peak on this GPU, or None without a plan."""
+    plan = edit_plan(task.profile) if cuda else None
+    if plan is None:
+        return None
+    mode = task.params.mode.value if task.params.mode in (Mode.RETAKE, Mode.AUDIO_TO_VIDEO) else None
+    tokens = latent_tokens(task.width, task.height, ltx_num_frames(task.params.duration_s, task.params.fps))
+    encode, held = source_encode_gib(mode, task.width, task.height), source_held_gib(mode)
+    render = plan.estimate_gib(tokens)
+    return {
+        "tokens": tokens, "render_gib": round(render, 2), "encode_gib": round(plan.encode_gib(encode), 2) if mode else None, "held_gib": held,
+        "estimate_gib": round(max(render, plan.encode_gib(encode) if mode else 0.0) + held, 2), "usable_gib": plan.usable_gib,
+    }
+
+
+def run(name: str, task: GenerationTask) -> tuple[dict, dict]:
+    """Renders `task`, writes <name>.mp4, and returns (record, host copy of the raw result)."""
     if cuda:
         torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
@@ -232,68 +325,131 @@ def run(name: str, task: GenerationTask) -> tuple[dict, dict, bytes]:
         # Per pass and modality: True where tokens were held, None where none were; never False.
         seen = [value for per_pass in report["seen_clean"].values() for value in per_pass.values()]
         checks["held tokens seen at t = 0"] = bool(seen) and False not in seen and True in seen
+    peak = gib(torch.cuda.max_memory_allocated()) if cuda else None
+    estimate = admission(task)
+    if estimate is not None:
+        checks["peak within admission's estimate"] = peak <= estimate["estimate_gib"]
     record = {
         "frames": info.frames, "expected_frames": frames, "container_s": info.duration_s, "video_s": round(video_s, 3), "audio_s": audio_s,
-        "wall_s": wall, "peak_gpu_gib": gib(torch.cuda.max_memory_allocated()) if cuda else None,
-        "peak_gpu_reserved_gib": gib(torch.cuda.max_memory_reserved()) if cuda else None, "edit": report, "checks": checks,
+        "wall_s": wall, "peak_gpu_gib": peak, "peak_gpu_reserved_gib": gib(torch.cuda.max_memory_reserved()) if cuda else None,
+        "admission": estimate, "edit": report, "checks": checks,
     }
-    return record, raw, result.data
+    return record, raw
 
 
 def finish(name: str, record: dict) -> None:
     record["ok"] = all(record["checks"].values())
     summary["jobs"][name] = record
     save()
-    print(f"{name}:", json.dumps({k: v for k, v in record.items() if k != "edit"}, default=str))
+    print(f"{name}:", json.dumps({k: v for k, v in record.items() if k not in ("edit", "psnr_db")}, default=str))
 
 
 def frame_array(frame) -> np.ndarray:
     return np.asarray(frame.convert("RGB") if hasattr(frame, "convert") else frame, dtype=np.uint8)
 
 
-# ---------------------------------------------------------------- retake (ltx-2.5-fast)
+# ---------------------------------------------------------------- encoding a retake's source
 
-width, height = size or FAST.size_for(args.resolution, "16:9")
-source = out / "retake-source.mp4"
-if ONLY & {"retake", "retake-audio"}:
+
+def whole_clip_tokens(renderer, pictures: np.ndarray):
+    """The source's tokens as the worker encoded them before chunking: every frame on the GPU, one `vae.encode`."""
+    pipeline, vae = renderer.pipeline, renderer.pipeline.vae
+    device = pipeline._execution_device
+    height, width = pictures.shape[1:3]
+    pixels = torch.empty((1, 3, len(pictures), height, width), dtype=vae.dtype, device=device)
+    with torch.no_grad():
+        for index, frame in enumerate(pictures):
+            pixels[0, :, index] = (torch.from_numpy(frame).to(device).permute(2, 0, 1).to(torch.float32) / 127.5 - 1.0).to(vae.dtype)
+        latent = vae.encode(pixels).latent_dist.mode()
+        del pixels
+        latent = pipeline._normalize_latents(latent, vae.latents_mean, vae.latents_std).to(torch.float32)
+        return pipeline._pack_latents(latent, pipeline.transformer_spatial_patch_size, pipeline.transformer_temporal_patch_size)
+
+
+def measure_encode(renderer, pictures: np.ndarray, *, whole: bool = False, chunk: int | None = None) -> tuple[dict, object]:
+    """One encode of `pictures` on its own: seconds and the peak allocated over what was allocated before, and its tokens on
+    the host."""
+    height, width = pictures.shape[1:3]
+    if cuda:
+        torch.cuda.synchronize()
+        before = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+    started = time.perf_counter()
+    tokens = whole_clip_tokens(renderer, pictures) if whole else renderer.encode_video(pictures, width, height, chunk)
+    if cuda:
+        torch.cuda.synchronize()
+    record = {"seconds": round(time.perf_counter() - started, 2), "measured_extra_gib": gib(torch.cuda.max_memory_allocated() - before) if cuda else None}
+    tokens = tokens.detach().to("cpu", torch.float32)
+    if cuda:
+        torch.cuda.empty_cache()
+    return record, tokens
+
+
+def encoder_layout(renderer) -> dict:
+    from kuno_worker.backends.ltx_chunked_encode import CHUNK_LATENT_FRAMES, encoder_cache_values
+
+    vae = renderer.pipeline.vae
+    config = {key: vae.config.get(key) for key in ("block_out_channels", "layers_per_block", "downsample_type", "spatio_temporal_scaling",
+                                                   "patch_size", "patch_size_t", "encoder_causal")}
+    return {"chunk_frames": CHUNK_LATENT_FRAMES * int(vae.temporal_compression_ratio), "cache_values_per_pixel": encoder_cache_values(vae.encoder),
+            "vae_encoder_config": config}
+
+
+def source_encode_at_5s(pictures: np.ndarray) -> None:
+    """The chunked encode against admission's estimate and against the whole-clip encode, which fits at 5 s."""
+    frames, (height, width) = len(pictures), pictures.shape[1:3]
+    with backend.store.acquire(FAST) as loaded:
+        renderer = loaded.pinned_renderer()
+        chunked, tokens = measure_encode(renderer, pictures)
+        by_16, _ = measure_encode(renderer, pictures, chunk=2)
+        whole, reference = measure_encode(renderer, pictures, whole=True)
+        record = {"frames": frames, "size": f"{width}x{height}", **encoder_layout(renderer), **chunked,
+                  "estimate_gib": round(source_encode_gib("retake", width, height), 2), "chunks_of_16_frames": by_16, "whole_clip": whole}
+    difference = (tokens - reference).abs()
+    spread = float(reference.std())
+    record["tokens_against_whole_clip"] = {"max_abs": float(difference.max()), "mean_abs": float(difference.mean()), "spread": spread}
+    record["checks"] = {"tokens match the whole-clip encode": float(difference.max()) <= ENCODE_MATCH_SPREAD * spread}
+    if cuda:
+        record["checks"]["chunked encode within the estimate"] = record["measured_extra_gib"] <= record["estimate_gib"]
+    summary["source_encode"] = record
+    save()
+    print("source encode:", json.dumps(record, default=str))
+
+
+def retake_checks(record: dict, raw: dict, pictures: np.ndarray, sound: np.ndarray, *, quality: bool) -> None:
+    report = raw["edit"]
+    s0, s1 = report["regenerated_samples"] or (0, 0)
+    track = raw["audio"]
+    record["checks"]["sound outside the span identical to the source"] = bool(
+        np.array_equal(track[:, :s0], sound[:, :s0]) and np.array_equal(track[:, s1:], sound[:, s1:])
+    )
+    p0, p1 = report["regenerated_frames"]
+    scores = [psnr(frame_array(f), pictures[i]) for i, f in enumerate(PipelineResult.from_pipeline(raw).frames)]
+    held = [s for i, s in enumerate(scores) if p1 <= p0 or i < p0 - 8 or i >= p1 + 8]
+    inside = [s for i, s in enumerate(scores) if p0 <= i < p1]
+    record["psnr_db"] = {"per_frame": scores, "held_min": min(held) if held else None, "held_mean": round(float(np.mean(held)), 2) if held else None,
+                         "window_mean": round(float(np.mean(inside)), 2) if inside else None}
+    record["splice_jump_ratio"] = [jump_ratio(track, s0), jump_ratio(track, s1)] if s1 > s0 else None
+    if quality:
+        record["checks"]["held frames near-identical to the source"] = bool(held) and min(held) >= PSNR_HELD_DB
+        if inside:
+            record["checks"]["the window changed"] = float(np.mean(inside)) < min(held)
+        if s1 > s0:
+            record["checks"]["no click at the splice"] = all(r is None or r <= 8 for r in record["splice_jump_ratio"])
+
+
+def retakes(width: int, height: int) -> None:
+    source = out / "retake-source.mp4"
     if args.tiny:
         test_pattern_clip(source, width, height, 5.2)
     else:
-        record, _, data = run("retake-source", task_for(
+        record, _ = run("retake-source", task_for(
             FAST, Mode.TEXT_TO_VIDEO, "A woman at a kitchen table talks to the camera about her garden, gesturing with a mug. Warm morning light. "
             "She says: \"The tomatoes came in early this year, and the basil is everywhere.\"", 5.0, [],
         ))
         finish("retake-source", record)
-    frames = ltx_num_frames(5.0, args.fps)
-    conformed = decode_frames(source, fps=args.fps, width=width, height=height, count=frames)
-    if len(conformed) < frames:
-        conformed = np.concatenate([conformed, np.repeat(conformed[-1:], frames - len(conformed), axis=0)])
-    source_sound = fit_samples(decode_audio(source, sample_rate=48_000, duration_s=frames / args.fps), round(frames / args.fps * 48_000))
-
-    # What encoding the source takes on the GPU by itself, against admission's estimate.
-    if cuda:
-        with backend.store.acquire(FAST) as loaded:
-            renderer = loaded.pinned_renderer()
-            torch.cuda.synchronize()
-            before = torch.cuda.memory_allocated()
-            torch.cuda.reset_peak_memory_stats()
-            started = time.perf_counter()
-            renderer.encode_video(conformed, width, height)
-            torch.cuda.synchronize()
-            summary["source_encode"] = {
-                "frames": frames, "size": f"{width}x{height}", "seconds": round(time.perf_counter() - started, 2),
-                "measured_extra_gib": gib(torch.cuda.max_memory_allocated() - before),
-                "estimate_gib": round(source_encode_gib("retake", frames, width, height), 2),
-                # The distilled bf16 recipe's measured activation line (precision_recipes.json) at the clip's tokens.
-                "render_activation_estimate_gib": round(3.32 + 4.6 * latent_tokens(width, height, frames) / 10_000, 2),
-            }
-            record = summary["source_encode"]
-            # Admission counts the source beside a render's activations, never both at once: the encode must fit in their sum.
-            record["within_admission"] = record["measured_extra_gib"] <= record["estimate_gib"] + record["render_activation_estimate_gib"]
-            torch.cuda.empty_cache()
-        save()
-        print("source encode:", json.dumps(summary["source_encode"]))
-
+    pictures, sound = conformed_source(source, width, height, 5.0)
+    source_encode_at_5s(pictures)
     for name, options, prompt in (
         ("retake", {}, "The woman stands up, laughing, and holds a basket of red tomatoes up to the camera."),
         ("retake-audio", {"regenerate_video": False}, "She says: \"Honestly, the peppers were a disaster.\""),
@@ -301,34 +457,46 @@ if ONLY & {"retake", "retake-audio"}:
         if name not in ONLY:
             continue
         task = task_for(FAST, Mode.RETAKE, prompt, 5.0, [(InputRole.SOURCE_VIDEO, source, {"start_s": 1.5, "end_s": 3.5})], options=options, seed=args.seed + 7)
-        record, raw, _ = run(name, task)
-        report = raw["edit"]
-        s0, s1 = report["regenerated_samples"] or (0, 0)
-        track = raw["audio"]
-        record["checks"]["sound outside the span identical to the source"] = bool(
-            np.array_equal(track[:, :s0], source_sound[:, :s0]) and np.array_equal(track[:, s1:], source_sound[:, s1:])
-        )
-        p0, p1 = report["regenerated_frames"]
-        scores = [psnr(frame_array(f), conformed[i]) for i, f in enumerate(PipelineResult.from_pipeline(raw).frames)]
-        held = [s for i, s in enumerate(scores) if p1 <= p0 or i < p0 - 8 or i >= p1 + 8]
-        inside = [s for i, s in enumerate(scores) if p0 <= i < p1]
-        record["psnr_db"] = {"per_frame": scores, "held_min": min(held) if held else None, "held_mean": round(float(np.mean(held)), 2) if held else None,
-                             "window_mean": round(float(np.mean(inside)), 2) if inside else None}
-        record["splice_jump_ratio"] = [jump_ratio(track, s0), jump_ratio(track, s1)] if s1 > s0 else None
-        if QUALITY:
-            record["checks"]["held frames near-identical to the source"] = bool(held) and min(held) >= PSNR_HELD_DB
-            if inside:
-                record["checks"]["the window changed"] = float(np.mean(inside)) < min(held)
-            if s1 > s0:
-                record["checks"]["no click at the splice"] = all(r is None or r <= 8 for r in record["splice_jump_ratio"])
+        record, raw = run(name, task)
+        retake_checks(record, raw, pictures, sound, quality=QUALITY)
         finish(name, record)
+
+
+def long_retake(width: int, height: int) -> None:
+    if args.long_retake == "auto":
+        plan = edit_plan(FAST) if cuda else None
+        seconds = _longest_fitting(plan, FAST, width, height, args.fps, "retake") if plan is not None else None
+        if seconds is None:
+            summary["retake_long_skipped"] = "no memory plan to find the longest retake by; pass --long-retake <seconds>"
+            save()
+            return
+    else:
+        seconds = float(args.long_retake)
+    source = out / "retake-long-source.mp4"
+    test_pattern_clip(source, width, height, seconds + 0.2)
+    pictures, sound = conformed_source(source, width, height, seconds)
+    with backend.store.acquire(FAST) as loaded:
+        encode, _ = measure_encode(loaded.pinned_renderer(), pictures)
+    encode.update(frames=len(pictures), estimate_gib=round(source_encode_gib("retake", width, height), 2))
+    middle = seconds / 2
+    task = task_for(FAST, Mode.RETAKE, "A test card fills the screen, then a slow pan across a bright studio set.", seconds,
+                    [(InputRole.SOURCE_VIDEO, source, {"start_s": middle - 1.0, "end_s": middle + 1.0})], seed=args.seed + 11)
+    record, raw = run("retake-long", task)
+    retake_checks(record, raw, pictures, sound, quality=False)
+    record["encode"] = encode
+    if cuda:
+        record["checks"]["chunked encode within the estimate"] = encode["measured_extra_gib"] <= encode["estimate_gib"]
+    finish("retake-long", record)
+
 
 # ---------------------------------------------------------------- audio-to-video (ltx-2.5-pro)
 
-if "a2v" in ONLY:
+
+def audio_to_video(width: int, height: int) -> None:
     sound = out / "a2v-source.wav"
     speech_like(sound, args.a2v_duration + 1.0)
     first = out / "a2v-first-frame.png"
+    source = out / "retake-source.mp4"
     if source.exists():
         ffmpeg("-i", str(source), "-frames:v", "1", str(first))
     else:
@@ -337,7 +505,7 @@ if "a2v" in ONLY:
         PRO, Mode.AUDIO_TO_VIDEO, "A woman at a kitchen table talks and hums along to music playing from a small radio beside her.",
         args.a2v_duration, [(InputRole.SOURCE_AUDIO, sound, {"start_s": 0.5}), (InputRole.FIRST_FRAME, first, {})],
     )
-    record, raw, data = run("a2v", task)
+    record, raw = run("a2v", task)
     frames = ltx_num_frames(args.a2v_duration, args.fps)
     samples = round(frames / args.fps * 48_000)
     expected = fit_samples(decode_audio(sound, sample_rate=48_000, start_s=0.5, duration_s=frames / args.fps), samples)
@@ -367,8 +535,25 @@ if "a2v" in ONLY:
         record["checks"]["the audio VAE round trip resembles the source"] = round_trip > 0.6
     finish("a2v", record)
 
-encode_ok = summary.get("source_encode", {}).get("within_admission", True)
-summary["result"] = "PASS" if summary["jobs"] and encode_ok and all(job["ok"] for job in summary["jobs"].values()) else "FAIL"
+
+# ---------------------------------------------------------------- the run
+
+# Every step is a function: whatever it held on the GPU (a renderer, a loaded adapter) is released when it returns, so the
+# model store's eviction of ltx-2.5-fast really frees it before ltx-2.5-pro loads.
+width, height = size or FAST.size_for(args.resolution, "16:9")
+if ONLY & {"retake", "retake-audio"}:
+    retakes(width, height)
+if "retake-long" in ONLY:
+    long_retake(width, height)
+if "a2v" in ONLY:
+    audio_to_video(width, height)
+
+later = summary["loads"][1:]
+summary["evicted_before_each_load"] = all(
+    load["evicted_modules_alive"] == 0 and (not cuda or load["allocated_before_gib"] < EVICTED_LEFT_GIB) for load in later
+)
+checks = [all(summary.get("source_encode", {}).get("checks", {}).values()), summary["evicted_before_each_load"]]
+summary["result"] = "PASS" if summary["jobs"] and all(checks) and all(job["ok"] for job in summary["jobs"].values()) else "FAIL"
 save()
 print("RESULT:", summary["result"])
 sys.exit(0 if summary["result"] == "PASS" else 1)
