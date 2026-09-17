@@ -270,3 +270,46 @@ decoder. The decoder runs with exact chunked attention (`backends/ltx_diffusion_
 - **Decode:** it used 14 GiB above the weights against about 25 estimated.
 - **Consequence:** the card's advertised envelope (1440p up to 4 s, no 2160p) is probably much smaller than what fits. A
   calibration sweep past admission (`--calibrate`) is next, to refit both lines.
+
+## Addendum 6: 4K calibration sweep past admission (2026-09-17 14:35–15:03 UTC)
+
+**Setup.** MassedCompute RTX PRO 6000, about 28 min, about $1.00. It needed two passes: the first asked for a 12 s clip,
+past the profile's 10 s limit. Image `ltx-0.1.0-25d8d065d34a`; `run_4k_worker.py --calibrate`, which renders past
+admission and records an out-of-memory error instead of failing the run. Weights loaded: 66.95 GiB. 24 fps,
+text-to-video with sound.
+
+| Clip | Frames | Tokens | Wall (render + decode) | Render peak | Decode peak | Old estimate (render / decode) |
+|---|---|---|---|---|---|---|
+| 1440p 4 s | 97 | 45,760 | 92 s (45 + 45) | 73.73 | 80.90 | 92.83 / 91.70 |
+| 1440p 8 s | 193 | 88,000 | 216 s (115 + 98) | 79.62 | 88.68 | 112.26 / 99.32 |
+| **1440p 10 s** (profile max) | 241 | 109,120 | 285 s (161 + 120) | 82.57 | **91.25** | 121.98 / 101.96 |
+| 2160p 2 s | 49 | 57,120 | 109 s (61 + 45) | 75.31 | 80.84 | 98.06 / 89.20 |
+| **2160p 3 s** | 73 | 81,600 | 172 s (102 + 65) | 78.72 | **87.06** | 109.32 / 97.15 |
+| 2160p 5 s | 121 | 130,560 | – | – | **out of memory** in the decode (93.98 allocated) | 131.84 / 105.63 |
+
+**Fits.**
+- **Render:** above the weights it is linear in latent tokens: 0.40 GiB + 1.395 GiB per 10k tokens, every point within
+  0.02 GiB.
+- **Decode:** it grows per frame, about 0.072 GiB per frame at 1440p and 0.259 at 2160p. The 80-frame temporal tiles
+  make it stepwise.
+
+**What the RTX PRO 6000 can really serve:** 1440p up to the profile's 10 s, and 2160p up to 3 s (admission allowed
+1440p 4 s and no 2160p). The memory model is being refitted from these points.
+
+**Pictures.** The 1440p 10 s lighthouse clip holds one coherent, photoreal scene with waves and birds from start to end.
+A full-resolution 2160p crop is sharp, with no visible tile seams. Clips:
+`data/gpu-tests/ltx-2.5/repro-20260917T1501_cal-4k-*.mp4` and `repro-20260917T1446_cal-4k-1440p-0.mp4`.
+
+**Cost.** Wall time is 29 s per output second at 1440p and 55-57 s at 2160p, on one RTX PRO 6000.
+- **Per output second:** at $1.879/h confidential and 60% utilization, about $0.025/s (1440p) and $0.048/s (2160p).
+- **Check the price:** compare with `ltx-2.5-4k`'s price in `profiles.json` before selling it.
+
+**Price and VCU.** `ltx-2.5-4k` sells at $0.25 (1440p) and $0.39 (2160p) per second Private, and $0.19 and $0.30
+Standard (fal's list).
+- **Price floor:** the floor (cost × 1.25 / 0.60) is about $0.052 at 1440p and $0.10 at 2160p, so both modes cover
+  cost.
+- **VCU weights:** measured, `ltx-2.5-fast` 720p = 3 VCU at $0.0041/s. Near 5 s this gives about 15 VCU per output
+  second at 1440p (23.5 GPU-s/s) and about 38 at 2160p (about 57 GPU-s/s). The duration slope is about 0.05 (1440p
+  cost per second rises 24% from 4 to 10 s).
+- **In `profiles.json`:** the weights are still placeholders, 22 and 60 with slope 0.03. Update them after the memory
+  refit lands.
