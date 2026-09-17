@@ -149,3 +149,51 @@ Rental: a MassedCompute RTX PRO 6000, about $0.65. Published images: worker `ltx
 `apad` plus `-shortest` let ffmpeg cut it half a second late. Fixed in subnet `9b873ef`: the samples are cut or padded
 to frames / fps and the file is capped with `-t`. Storyboards stitch their own audio and were exact. The fix has not
 been re-run on a GPU; a local test with the measured lengths gives 11.041 s of audio over 11.042 s of video.
+
+## Addendum 3: retake and audio-to-video on the pinning mechanism (2026-09-17 01:16–01:24 UTC)
+
+**Why.** Before subnet `89568ae`, both modes crashed on the GPU: the worker sent `audio_path` and `video_path`
+keywords that no diffusers 0.40 LTX-2 pipeline accepts. Both now render on the storyboard pinning mechanism
+(`backends/ltx_pinning.py`, `ltx_edit.py`; spec in `subnet/PROTOCOL.md` "Edits: retake and audio-to-video").
+
+**Setup.** Same rental as `director-design_2026-09-16.md` §12. Worker image `ltx-0.1.0-89568ae64d7e`; driver
+`scripts/gpu-test/long_video/run_edit_modes_worker.py`; 720p, 24 fps. Nothing was downloaded: the sound was synthesized
+with ffmpeg, and the clip to retake was rendered first.
+
+| Job | Wall | Peak allocated | Result |
+|---|---|---|---|
+| Source clip, `ltx-2.5-fast`, 5 s | 31.6 s | 77.22 GiB | 121 frames, audio 5.056 s |
+| Retake of 1.5-3.5 s, picture and sound | 22.8 s | 78.26 GiB | **PASS** |
+| The same window, `regenerate_video: false` | 22.8 s | 78.26 GiB | **PASS** |
+| Audio-to-video, `ltx-2.5-pro`, 4 s, with a first frame | 232.3 s | 75.90 GiB | **PASS** |
+
+**Retake.**
+- **Regenerated span:** latent frames 5-12 (pixel frames 33-89) for the 1.5-3.5 s window. 9 of 16 latent frames and 75
+  of 126 audio latents were held.
+- **Pins:** held tokens stayed bit-exact in every pass, and the model saw them at t = 0.
+- **Picture:** held frames came back at 35.8-39.7 dB PSNR against the source (mean 38.3). The window's mean was 28.0 dB,
+  so it really changed.
+- **Sound:** samples outside the span are identical to the source. Splice jumps were 2.5-3.2x the typical step (limit 8).
+- **Sound-only retake:** every frame stayed at or above 35.9 dB, and only the sound in the window was regenerated.
+- **Encoding the source took 1.2 s.**
+
+**Audio-to-video.**
+- **Samples:** the returned samples are exactly the source's. The MP4's AAC track lines up with the source at 0 ms lag
+  (correlation 0.9999).
+- **Pins:** held audio tokens stayed exact in every pass.
+- **Audio VAE settings:** a round trip through the audio VAE (encode, decode, vocoder) gives a log-mel correlation of
+  0.87 with the source. This confirms the n_fft of 1024 the encoder assumes.
+- **Speed:** 4 s of `ltx-2.5-pro` took 232 s, about 58 s per output second.
+
+**Problems found.**
+1. **Encoding the source needs about 8x the memory admission assumes.**
+   - Measured: 12.07 GiB extra for 121 frames at 1280x704, against `source_encode_gib`'s 1.47 GiB.
+   - A 5 s retake still fit (78.26 GiB).
+   - If encode memory grows with length, retakes near the RTX PRO 6000's 15 s cap would run out of memory. A chunked
+     encode and a corrected estimate are being built.
+2. **The driver kept the evicted `ltx-2.5-fast` pipeline alive,** so its single-process run ran out of memory loading
+   `ltx-2.5-pro`.
+   - The worker is fine: `LtxResidentBackend.warm(fast)` then `warm(pro)` reloaded to 66.18 GiB in 12.0 s.
+   - Audio-to-video was run in a fresh process; the driver is being fixed.
+
+Clips: `data/gpu-tests/ltx-2.5/repro-20260917T0118_edit-*.mp4` and `repro-20260917T0124_edit-a2v.mp4`.

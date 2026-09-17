@@ -1189,3 +1189,31 @@ The card advertises (24 fps) 720p 16:9 and 9:16 up to 18 s, 4:3 20 s, 1:1 18 s a
 - Plan price: a plan takes 10-41 s of one RTX PRO 6000. At $1.879/h confidential and 60% utilization, a 41 s plan
   costs about $0.036, so the flat $0.08 Standard and $0.10 Private prices cover it about 2-3x.
 - Optional prompt work: more `continue` joins, and revisions that write only the rewritten shots.
+
+## 12. Plans through a real gateway on a GPU, both privacy modes (2026-09-17 01:00–01:25 UTC)
+
+Rental: MassedCompute RTX PRO 6000, about 25 min in total, shared with the edit-mode run in
+`long-video_ltx-av-extend_2026-09-16.md` (addendum 3), about $0.90.
+- **Images:** worker `ltx-0.1.0-89568ae64d7e` (`sha256:60b95290…`), gateway `cc8e9fb2553d`, mock-worker `89568ae64d7e`.
+- **Driver:** `ltx-smoke.sh` with `KUNO_SMOKE_PLAN` (dev `32e588d`). The Python SDK plans the brief through the gateway,
+  then renders the plan as a storyboard in the same privacy mode.
+
+| Run | Plan | Storyboard job | Result |
+|---|---|---|---|
+| Standard, roastery brief, 30 s target, style "35mm film, warm" | 6 shots, 29.708 s, 1,163 tokens, 36.2 s from submit to plan | 104 s, 1280x704, 29.71 s, H.264 + AAC, $2.67 | **PASS** |
+| Private, lighthouse brief, 45 s target | 8 shots, 45.375 s, 676 tokens, 24.2 s | 158 s, 45.38 s, $5.45; opened by the SDK, SHA-256 matches the receipt | **PASS** |
+
+- **The whole path runs on real hardware:**
+  - The worker registered `plan/1`, and the gateway routed both plans to it.
+  - The Standard plan passed the gateway's content policy on the brief and on the delivered plan, and was read back
+    from `GET /v1/standard/plans/{id}`.
+  - The Private plan was sealed by the SDK, opened on the client, and checked against the receipt's `plan` block
+    (`planner` `ltx-2.5-distilled/bf16/1:prompt_enhancer`, `prompt_version` `plan/1`).
+- **Peaks:** 83.5 GB (Standard) and 87.3 GB (Private) GPU, 24 GiB host RAM.
+- **Plans read well:**
+  - The roastery plan carries the style into the scene ("35mm film with a warm tone") and keeps one person in an apron
+    across shots.
+  - The lighthouse plan keeps the same keeper, sweater and window across 8 shots.
+  - The repairs again made a `continue` at a new shot size into a cut, and trimmed the length.
+- **Prices matched** the Standard ($0.09/s) and Private ($0.12/s) storyboard rates. The plans themselves are $0.08 and
+  $0.10 flat.
