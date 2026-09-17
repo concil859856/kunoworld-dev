@@ -322,7 +322,7 @@ straight line through the 2 s and 3 s decode peaks put it near 93.1 GiB, so it w
 
 | Clip | Frames | Tokens | Wall (render + decode) | Render peak | Decode peak | Estimate (render / decode) |
 |---|---|---|---|---|---|---|
-| 2160p 4 s | 97 | 106,080 | 267 s (153 + 109) | 82.13 GiB | **90.28 GiB** | see `4k.json`; decode 92.35 |
+| 2160p 4 s | 97 | 106,080 | 267 s (153 + 109) | 82.13 GiB | **90.28 GiB** | 84.02 / 92.35 GiB |
 
 **Pass.** The decode peaked at 90.28 GiB, as the tile replay predicted (90.3), not the straight line: a clip past 80
 frames opens a second temporal tile group. So the RTX PRO 6000 serves 2160p up to 4 s and 1440p up to 10 s, both
