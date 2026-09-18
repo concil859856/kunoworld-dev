@@ -35,7 +35,8 @@ loop — no gateway, no enclave, no job ([Other tasks](#other-tasks)):
 | Disk | ≥ 200 GB free where the weights go | `df` on `KUNO_SMOKE_DIR` (weights already there count) |
 | Packages | `curl`, `ffprobe` (`apt-get install -y ffmpeg`) | `command -v` |
 
-**For H3** (`KUNO_SMOKE_FAMILY=h3`): 4 GPUs of at least 141 GB in one machine (an 8-GPU H200 box is what we used),
+**For H3** (`KUNO_SMOKE_FAMILY=h3`): 4 GPUs of at least 141 GB in one machine for `h3` and `h3-reference` (an 8-GPU
+H200 box is what we used) — `h3-turbo` needs only one of them, since 2026-09-17 it is a single-GPU profile —
 driver R580 or newer, about 150 GB of disk for the `FL2VA` weights (`Ref2VA` adds about 61 GB), and a country the
 MiniMax H3 licence allows — not the US, EU, UK or South Korea, testing included.
 
@@ -171,7 +172,8 @@ Measured on 2026-09-15, 4 of 8 H200 141 GB (Tokyo), image `h3-0.1.0-0ad70874cd6b
 **`KUNO_SMOKE_GPUS`** gives the worker only the listed GPUs (nvidia-smi indices), so other work can run on the rest of
 an 8-GPU box at the same time:
 - the worker, preflight, `bench` and `determinism` get `--gpus "device=<list>"`;
-- `KUNO_H3_NUM_GPUS` is the list's length;
+- `KUNO_H3_NUM_GPUS` is the list's length for `h3` and `h3-reference`; a Turbo-only worker is left at the profile's
+  own default of one GPU, whatever the list holds;
 - `samples.csv` samples only those GPUs.
 
 Unset, LTX gets every GPU and H3 the first `KUNO_SMOKE_MIN_GPUS`, as before. The script's own containers are named
@@ -183,7 +185,7 @@ listen on 30010-30012, 31010-31012 and 32010-32012.
 container per GPU group, all started at once against one gateway, each with its own profiles.
 
 ```bash
-KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0,1,2,3:h3-turbo 4,5,6,7:h3" KUNO_SMOKE_PORT=18190 ~/gpu-test/ltx-smoke.sh
+KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0:h3-turbo 1,2,3,4:h3" KUNO_SMOKE_PORT=18190 ~/gpu-test/ltx-smoke.sh
 ```
 
 - **Syntax.** Each entry is `<GPU indices>:<profiles>`, and entries are separated by spaces. No GPU or profile may
@@ -193,6 +195,13 @@ KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0,1,2,3:h3-turbo 4
 - **Sequence.** Every worker must register before any job is submitted. Then each profile gets one job, in group order,
   while all workers stay up. They stop together.
 - **Output.** Logs are `logs/worker-g<i>.log`. `results.json` gives each profile its `gpus` and `gpu_group`.
+- **Group sizes.** A `h3` or `h3-reference` group is four GPUs, a `h3-turbo` group one (a real TD's groups are all the
+  same size; this driver does not enforce that).
+
+**`KUNO_SMOKE_H3_ATTENTION=sage`** passes `KUNO_H3_ATTENTION=sage` to every H3 worker, which starts its SGLang servers
+with `--attention-backend sage_attn`. It needs an image with SageAttention built in, which the worker refuses to run
+without; the published `h3-0.1.0-69e34d62492b` image has not got it, and the A/B of 2026-09-17 was run in a container
+committed by `h3_sglang/sage-ab.sh`. Leave it unset for FlashAttention, which every measurement so far used.
 - **One H3 load per group.** A group given two H3 variants (say `h3-turbo,h3`) exits at start, which is
   `kuno-h3-worker`'s rule on 141 GB H200s and 180 GB B200s. That group's profiles are reported as failed.
 - **Tested.** Only with `KUNO_SMOKE_MOCK=1` so far (2026-09-17).

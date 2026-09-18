@@ -4,11 +4,13 @@
 #
 #   HF_TOKEN=... GITHUB_TOKEN=... ./ltx-smoke.sh      the real model (KUNO_BACKEND=real) on this machine's GPU
 #   KUNO_SMOKE_MOCK=1 ./ltx-smoke.sh                  dry run without a GPU: local images, KUNO_BACKEND=mock
-#   KUNO_SMOKE_FAMILY=h3 GITHUB_TOKEN=... ./ltx-smoke.sh   MiniMax H3 instead: 4 GPUs, SGLang, the ungated FL2VA weights
+#   KUNO_SMOKE_FAMILY=h3 GITHUB_TOKEN=... ./ltx-smoke.sh   MiniMax H3 instead: SGLang and the ungated FL2VA weights,
+#                                                          on 4 GPUs for h3 and h3-reference, 1 for h3-turbo
 #   KUNO_SMOKE_TASK=bench ./ltx-smoke.sh                   kuno-bench instead of a job: the cost grid pricing needs
 #   KUNO_SMOKE_TASK=determinism ./ltx-smoke.sh             the same cases twice, leaf by leaf (VERIFIED_MODE.md Phase 0)
 #   KUNO_SMOKE_GPUS=4,5,6,7 ./ltx-smoke.sh                 the worker gets only these GPUs; other work can use the rest
-#   KUNO_SMOKE_GROUPS="0,1,2,3:h3-turbo 4,5,6,7:h3" ...    one worker per GPU group, all up at once (image/CVM.md §6)
+#   KUNO_SMOKE_GROUPS="0:h3-turbo 1,2,3,4:h3" ...          one worker per GPU group, all up at once (image/CVM.md §6)
+#   KUNO_SMOKE_H3_ATTENTION=sage ./ltx-smoke.sh            SGLang with SageAttention (KUNO_H3_ATTENTION in the worker)
 #
 # Everything runs in containers on 127.0.0.1 and nothing touches a chain: kuno-devkit init (mock-worker image), a dev
 # gateway on SQLite (gateway image), then for each profile in turn kuno-plan, one worker container with the simulated
@@ -98,6 +100,9 @@ if [ -n "$COUNTRY" ]; then COUNTRY_HEADER=(-H "x-kuno-country: $COUNTRY"); fi
 # KUNO_SMOKE_SDK_DIR, ./sdk beside this script, or the repository's sdk/python/src.
 if [ "$FAMILY" = h3 ]; then D_PRIVACY=private; else D_PRIVACY=standard; fi
 PRIVACY="${KUNO_SMOKE_PRIVACY:-$D_PRIVACY}"
+# KUNO_H3_ATTENTION for the worker: empty (the image's default, FlashAttention on Hopper) or sage.
+H3_ATTENTION="${KUNO_SMOKE_H3_ATTENTION:-}"
+case "$H3_ATTENTION" in "" | default | sage) ;; *) echo "ltx-smoke: KUNO_SMOKE_H3_ATTENTION must be default or sage" >&2 && exit 2 ;; esac
 # h3-reference renders reference_to_video from KUNO_SMOKE_REFERENCE_IMAGE; KUNO_SMOKE_PROMPT replaces the built-in prompt.
 REFERENCE_IMAGE="${KUNO_SMOKE_REFERENCE_IMAGE:-}"
 PROMPT_OVERRIDE="${KUNO_SMOKE_PROMPT:-}"
@@ -129,7 +134,7 @@ TURBO_LORA_PATH="$MOUNT/turbo/$TURBO_LORA_FILE"
 # for LTX, the first KUNO_SMOKE_MIN_GPUS for H3.
 GPUS="${KUNO_SMOKE_GPUS:-}"
 # One worker container per GPU group, all started together against one gateway, each with its own profiles and H3
-# ports: the layout kuno-app gives a whole-server TD (subnet/image/CVM.md §6). "0,1,2,3:h3-turbo 4,5,6,7:h3".
+# ports: the layout kuno-app gives a whole-server TD (subnet/image/CVM.md §6). "0:h3-turbo 1,2,3,4:h3".
 GPU_GROUPS="${KUNO_SMOKE_GROUPS:-}"
 GROUP_GPUS=()
 GROUP_PROFILES=()
@@ -148,7 +153,7 @@ if [ -n "$GPU_GROUPS" ]; then
     group_gpus="${group_entry%%:*}"
     group_profiles="${group_entry#*:}"
     if [ "$group_gpus" = "$group_entry" ] || [ -z "$group_profiles" ] || ! valid_gpu_list "$group_gpus"; then
-      echo "ltx-smoke: each KUNO_SMOKE_GROUPS entry is <GPU indices>:<profiles>, e.g. 0,1,2,3:h3-turbo; got '$group_entry'" >&2 && exit 2
+      echo "ltx-smoke: each KUNO_SMOKE_GROUPS entry is <GPU indices>:<profiles>, e.g. 1,2,3,4:h3; got '$group_entry'" >&2 && exit 2
     fi
     GROUP_GPUS+=("$group_gpus")
     GROUP_PROFILES+=("$group_profiles")
@@ -176,6 +181,9 @@ run_gpu_list() {
 # docker's --gpus value for a GPU list.
 docker_gpus() { if [ -n "$1" ]; then printf '"device=%s"' "$1"; else printf all; fi; }
 has_profile() { case ",$1," in *",$2,"*) return 0 ;; esac; return 1; }
+# Whether a profile list holds a profile that wants every GPU of its group: h3 and h3-reference run Ulysses over four,
+# while h3-turbo and every LTX-2.5 profile are one GPU each (subnet profiles.json, gpus_per_worker).
+needs_all_gpus() { has_profile "$1" h3 || has_profile "$1" h3-reference; }
 
 RUN_STARTED=0
 MAIN_DONE=0
@@ -745,10 +753,14 @@ start_worker() {
     # Ulysses over the worker's GPUs; NCCL needs the host's shared memory. SGLang's log is kept on a dev box.
     # KUNO_MINER_COUNTRY: H3 is licensed by territory, so the gateway refuses to register it from an excluded
     # (or unknown) country. Here it is the country this test machine runs in.
-    worker+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$(gpu_count "$gpus")" -e KUNO_SGLANG_LOG=inherit
+    worker+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_SGLANG_LOG=inherit
       -e KUNO_H3_FL2VA_URL="http://127.0.0.1:$((30010 + 10 * index))" -e KUNO_H3_REF2VA_URL="http://127.0.0.1:$((30011 + 10 * index))"
       -e KUNO_H3_TURBO_URL="http://127.0.0.1:$((30012 + 10 * index))")
+    # h3 and h3-reference spread over every GPU of their group; h3-turbo is a one-GPU profile, so its server keeps the
+    # worker's own default (1) however many GPUs the group has.
+    if needs_all_gpus "$profiles"; then worker+=(-e KUNO_H3_NUM_GPUS="$(gpu_count "$gpus")"); fi
     if has_profile "$profiles" h3-turbo; then worker+=(-e KUNO_H3_TURBO_LORA="$TURBO_LORA_PATH"); fi
+    if [ -n "$H3_ATTENTION" ]; then worker+=(-e KUNO_H3_ATTENTION="$H3_ATTENTION"); fi
     if [ -n "$COUNTRY" ]; then worker+=(-e KUNO_MINER_COUNTRY="$COUNTRY"); fi
   else
     worker+=(-e KUNO_LTX_MODELS_DIR="$MOUNT" -e KUNO_LTX_OFFLOAD="$LTX_OFFLOAD")
@@ -937,8 +949,10 @@ worker_tool() {
   local gpus
   gpus="$(worker_gpu_list)"
   if [ "$FAMILY" = h3 ]; then
-    args+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_H3_NUM_GPUS="$(gpu_count "$gpus")" -e KUNO_SGLANG_LOG=inherit)
+    args+=(--ipc host -e HF_HUB_CACHE="$MOUNT" -e HF_HUB_OFFLINE=1 -e KUNO_SGLANG_LOG=inherit)
+    if needs_all_gpus "$PROFILES"; then args+=(-e KUNO_H3_NUM_GPUS="$(gpu_count "$gpus")"); fi
     if has_profile "$PROFILES" h3-turbo; then args+=(-e KUNO_H3_TURBO_LORA="$TURBO_LORA_PATH"); fi
+    if [ -n "$H3_ATTENTION" ]; then args+=(-e KUNO_H3_ATTENTION="$H3_ATTENTION"); fi
   else
     args+=(-e KUNO_LTX_MODELS_DIR="$MOUNT")
   fi
