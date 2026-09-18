@@ -198,11 +198,12 @@ KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0:h3-turbo 1,2,3,4
 - **Group sizes.** A `h3` or `h3-reference` group is four GPUs, a `h3-turbo` group one (a real TD's groups are all the
   same size; this driver does not enforce that).
 
-**`KUNO_SMOKE_H3_ATTENTION=sage`** passes `KUNO_H3_ATTENTION=sage` to every H3 worker, which starts its SGLang servers
-with `--attention-backend sage_attn`. It needs an image with SageAttention built in, which the worker refuses to run
-without. `h3-0.1.0-fda88a73e660` is the first published image that has it; its kernels have not yet been imported on a
-GPU. The A/B of 2026-09-17 ran in a container committed by `h3_sglang/sage-ab.sh`. Leave it unset for FlashAttention,
-which every measurement so far used.
+**`KUNO_SMOKE_H3_ATTENTION`** passes `KUNO_H3_ATTENTION` to every H3 worker. Unset, the worker's own default (`auto`)
+applies: since subnet 2026-09-18 that is SageAttention (`--attention-backend sage_attn`) for the Turbo server on H200s,
+and SGLang's own choice (FlashAttention) for full H3 and on other cards. `default` puts every server on FlashAttention,
+which every measurement before 2026-09-18 used; `sage` puts every server on SageAttention. Images before subnet
+2026-09-18 default to FlashAttention everywhere and accept only `default` or `sage`. The A/B of 2026-09-17 ran in a
+container committed by `h3_sglang/sage-ab.sh`.
 - **One H3 load per group.** A group given two H3 variants (say `h3-turbo,h3`) exits at start, which is
   `kuno-h3-worker`'s rule on 141 GB H200s and 180 GB B200s. That group's profiles are reported as failed.
 - **Tested.** Only with `KUNO_SMOKE_MOCK=1` so far (2026-09-17).
@@ -317,7 +318,7 @@ All optional.
 | `KUNO_SMOKE_WEIGHTS_VERIFY` | `full` | `KUNO_WEIGHTS_VERIFY` (`size` needs `KUNO_MODEL_DIGEST`) |
 | `KUNO_MODEL_DIGEST` | unset | Passed to the worker when set |
 | `KUNO_SMOKE_REGISTRY` | `ghcr.io/concil859856` | Image registry and namespace |
-| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-fda88a73e660` (or `h3-0.1.0-fda88a73e660`), `65e4bc789542`, `fda88a73e660` | Image tags |
+| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-1511c921bb89` (or `h3-0.1.0-1511c921bb89`), `65e4bc789542`, `fda88a73e660` | Image tags |
 | `KUNO_SMOKE_WORKER_IMAGE`, `_GATEWAY_IMAGE`, `_DEVKIT_IMAGE` | built from the two rows above | Whole image references, e.g. `…@sha256:…` |
 | `KUNO_SMOKE_SKIP_LOGIN`, `KUNO_SMOKE_REGISTRY_USER` | `0`, `concil859856` | Skip `docker login` (public images); the login user name |
 | `KUNO_SMOKE_PULL` | `always` | `missing`: use an image already on this machine (e.g. one built there) and pull the rest |
@@ -347,7 +348,7 @@ published one, since no local `kunoworld/gateway:local` build is needed:
 
 ```bash
 KUNO_SMOKE_MOCK=1 KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0,1,2,3:h3-turbo 4,5,6,7:h3" \
-  KUNO_SMOKE_WORKER_IMAGE=ghcr.io/concil859856/kunoworld-worker:h3-0.1.0-fda88a73e660 \
+  KUNO_SMOKE_WORKER_IMAGE=ghcr.io/concil859856/kunoworld-worker:h3-0.1.0-1511c921bb89 \
   KUNO_SMOKE_GATEWAY_IMAGE=ghcr.io/concil859856/kunoworld-gateway:65e4bc789542 \
   KUNO_SMOKE_DEVKIT_IMAGE=ghcr.io/concil859856/kunoworld-mock-worker:fda88a73e660 KUNO_SMOKE_DIR=/tmp/gpu-smoke-h3 scripts/gpu-test/ltx-smoke.sh
 ```

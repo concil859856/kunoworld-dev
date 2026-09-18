@@ -122,15 +122,18 @@ rendered on one H200 each, concurrently with the H3 runs.
   - `KUNO_H3_ATTENTION=sage` adds `--attention-backend sage_attn`; the default runs FlashAttention as every measurement
     did.
   - The worker's start-up log names the backend it used. Receipts don't carry it yet.
+  - **Update 2026-09-18: on by default for Turbo on H200s** (subnet `1511c92`, image `h3-0.1.0-1511c921bb89`). The owner
+    watched the two clips side by side and could not tell which was better. `KUNO_H3_ATTENTION=auto`, the new default,
+    gives the Turbo server SageAttention when the image has it and NVML reports only SM90 GPUs; full H3 and other cards
+    keep FlashAttention, and `sage` by name is refused on cards the kernels aren't built for.
 - **Full `h3` and `h3-reference` are Private-only.** Their Standard prices ($0.06, a fifth of cost or less) were removed,
   so the gateway refuses Standard jobs for them with its existing `privacy_mode_unavailable`, before any charge.
 
 ## Next
 
-1. **Watch the Turbo clips** (`data/gpu-tests/ltx-2.5/smoke-20260917T191725Z_h3-turbo.mp4` and the SageAttention pair)
-   against 2026-09-16's 7-pass clips, to confirm the quality of 8 real passes and of SageAttention.
+1. **Done 2026-09-18 for SageAttention:** the owner watched the pair and could not tell them apart.
 2. **Run one-GPU Turbo through the worker on an H200:** `--num-gpus 1`, a 10 s render watched for peak memory (the
    envelope's interpolated rung), and the ×1 `gpu_seconds` in the receipt.
-3. **Switch Turbo to SageAttention** once the owner has compared the clips, and confirm from the rebuilt image that
-   SGLang's log says `sage_attn`.
+3. **Switched 2026-09-18** (subnet `1511c92`). Still to confirm on a GPU, from the rebuilt image, that SGLang's log says
+   `sage_attn` and that a 10 s clip fits one H200 with SageAttention's extra ~2 GB (step 2 covers both).
 4. **Done:** full H3 and H3 Director are Private-only.

@@ -10,7 +10,7 @@
 #   KUNO_SMOKE_TASK=determinism ./ltx-smoke.sh             the same cases twice, leaf by leaf (VERIFIED_MODE.md Phase 0)
 #   KUNO_SMOKE_GPUS=4,5,6,7 ./ltx-smoke.sh                 the worker gets only these GPUs; other work can use the rest
 #   KUNO_SMOKE_GROUPS="0:h3-turbo 1,2,3,4:h3" ...          one worker per GPU group, all up at once (image/CVM.md §6)
-#   KUNO_SMOKE_H3_ATTENTION=sage ./ltx-smoke.sh            SGLang with SageAttention (KUNO_H3_ATTENTION in the worker)
+#   KUNO_SMOKE_H3_ATTENTION=default ./ltx-smoke.sh         SGLang's FlashAttention even for Turbo (KUNO_H3_ATTENTION in the worker)
 #
 # Everything runs in containers on 127.0.0.1 and nothing touches a chain: kuno-devkit init (mock-worker image), a dev
 # gateway on SQLite (gateway image), then for each profile in turn kuno-plan, one worker container with the simulated
@@ -54,7 +54,7 @@ if [ "$MOCK" = 1 ]; then
   DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-kunoworld/mock-worker:local}"
   BACKEND="${KUNO_SMOKE_BACKEND:-mock}"
 else
-  if [ "$FAMILY" = h3 ]; then WORKER_TAG_DEFAULT=h3-0.1.0-fda88a73e660; else WORKER_TAG_DEFAULT=ltx-0.1.0-fda88a73e660; fi
+  if [ "$FAMILY" = h3 ]; then WORKER_TAG_DEFAULT=h3-0.1.0-1511c921bb89; else WORKER_TAG_DEFAULT=ltx-0.1.0-1511c921bb89; fi
   WORKER_IMAGE="${KUNO_SMOKE_WORKER_IMAGE:-$REGISTRY/kunoworld-worker:${KUNO_SMOKE_WORKER_TAG:-$WORKER_TAG_DEFAULT}}"
   GATEWAY_IMAGE="${KUNO_SMOKE_GATEWAY_IMAGE:-$REGISTRY/kunoworld-gateway:${KUNO_SMOKE_GATEWAY_TAG:-65e4bc789542}}"
   DEVKIT_IMAGE="${KUNO_SMOKE_DEVKIT_IMAGE:-$REGISTRY/kunoworld-mock-worker:${KUNO_SMOKE_DEVKIT_TAG:-fda88a73e660}}"
@@ -100,9 +100,9 @@ if [ -n "$COUNTRY" ]; then COUNTRY_HEADER=(-H "x-kuno-country: $COUNTRY"); fi
 # KUNO_SMOKE_SDK_DIR, ./sdk beside this script, or the repository's sdk/python/src.
 if [ "$FAMILY" = h3 ]; then D_PRIVACY=private; else D_PRIVACY=standard; fi
 PRIVACY="${KUNO_SMOKE_PRIVACY:-$D_PRIVACY}"
-# KUNO_H3_ATTENTION for the worker: empty (the image's default, FlashAttention on Hopper) or sage.
+# KUNO_H3_ATTENTION for the worker: empty (the worker's default, auto: SageAttention for Turbo on H200s), auto, default or sage.
 H3_ATTENTION="${KUNO_SMOKE_H3_ATTENTION:-}"
-case "$H3_ATTENTION" in "" | default | sage) ;; *) echo "ltx-smoke: KUNO_SMOKE_H3_ATTENTION must be default or sage" >&2 && exit 2 ;; esac
+case "$H3_ATTENTION" in "" | auto | default | sage) ;; *) echo "ltx-smoke: KUNO_SMOKE_H3_ATTENTION must be auto, default or sage" >&2 && exit 2 ;; esac
 # h3-reference renders reference_to_video from KUNO_SMOKE_REFERENCE_IMAGE; KUNO_SMOKE_PROMPT replaces the built-in prompt.
 REFERENCE_IMAGE="${KUNO_SMOKE_REFERENCE_IMAGE:-}"
 PROMPT_OVERRIDE="${KUNO_SMOKE_PROMPT:-}"
