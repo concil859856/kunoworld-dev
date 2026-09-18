@@ -38,7 +38,7 @@ Private jobs, 5 s at 1344x768, 24 fps, sealed by the SDK and opened against the 
   `h3` on GPUs 4-7 (job 84.4 s), each registering its own enclave with its group's GPUs. Group timings match the
   single-group runs, so sharing a host costs nothing measurable.
 
-## 3. SageAttention on H3 Turbo: 6.5% faster, close to the same picture
+## 3. SageAttention on H3 Turbo: 6.5% faster, the same scene framed differently
 
 The `sageattention` package is not in the image. Building it on the box took 234 s (nvcc 13.4 against CUDA 13.0 headers
 needs `-DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK`, and libcuda must be on the link path). SGLang's log names the backend it
@@ -53,6 +53,9 @@ runs, so this is not a silent fallback.
   larger model with more tokens).
 - **Quality:** B against A is 30.2 dB PSNR and 0.925 SSIM. That is far closer than SageAttention2's 19.9 dB against
   BF16 in the VC-Attention paper, because Turbo runs 8 passes rather than 50, so trajectories diverge less.
+  - **Correction, 2026-09-18:** looking at the frames, it is not the same picture. The scene, light and colour
+    match, but the cliff and the lighthouse sit in different places. The PSNR is high because most of the frame
+    is dark silhouette and smooth sky. The decision rests on whether B looks as good, not on the metric.
 - **Deterministic:** each backend repeated its own clip bit-identically.
 - **Memory:** 128.9 GB peak against 126.6 GB, so it costs about 2 GB.
 
@@ -79,7 +82,7 @@ quoted a stale $0.20 for Private full H3.
    - **Caveat:** a 1-GPU H200 peaks at 126-129 GB of 141 GB for a 5 s clip, and the 2026-09-16 run peaked at 138-139 GB
      at 14 s. Cap 1-GPU Turbo's length, or give it a B200/B300.
 2. **SageAttention is worth adopting for Turbo** once its quality is judged by eye: 6.5% cheaper for 2 GB of memory,
-   with the same picture to 30 dB. It needs a package built into the image, not a flag, and its own precision recipe.
+   with the same scene, though not the same framing (30 dB PSNR overstates the match). It needs a package built into the image, not a flag, and its own precision recipe.
 3. **Full H3's Private price already covers its floor:** $0.30 against $0.295 at 5 s, and at 14 s the `long_clip`
    multiplier gives $0.51 against a $0.505 floor (2026-09-16 numbers). The margin is thin but positive, and Private
    full H3 is a premium, privacy-only profile; fal sells the non-private version at $0.08.

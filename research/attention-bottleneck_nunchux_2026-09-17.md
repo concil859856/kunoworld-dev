@@ -131,6 +131,8 @@ stand-in for VC-Attention, which has no code release.
 - **6.5% faster end to end**, close to the paper's 13% for 8-bit attention on an H200 at a larger token count.
 - **Quality:** 30.2 dB PSNR and 0.925 SSIM against the FlashAttention clip, much closer than the paper's 19.9 dB for
   SageAttention2 against BF16, because Turbo runs 8 passes instead of 50.
+  **Correction, 2026-09-18:** by eye the framing differs (cliff and lighthouse move); the metric is high because
+  most of the frame is dark silhouette and smooth sky.
 - **Cost:** the package is not in the image and took 234 s to build on the box (nvcc 13.4 against CUDA 13.0 headers
   needs `-DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK`; libcuda must be on the link path). It also costs about 2 GB of GPU
   memory.
