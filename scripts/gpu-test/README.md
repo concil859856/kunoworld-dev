@@ -200,8 +200,9 @@ KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0:h3-turbo 1,2,3,4
 
 **`KUNO_SMOKE_H3_ATTENTION=sage`** passes `KUNO_H3_ATTENTION=sage` to every H3 worker, which starts its SGLang servers
 with `--attention-backend sage_attn`. It needs an image with SageAttention built in, which the worker refuses to run
-without; the published `h3-0.1.0-fda88a73e660` image has not got it, and the A/B of 2026-09-17 was run in a container
-committed by `h3_sglang/sage-ab.sh`. Leave it unset for FlashAttention, which every measurement so far used.
+without. `h3-0.1.0-fda88a73e660` is the first published image that has it; its kernels have not yet been imported on a
+GPU. The A/B of 2026-09-17 ran in a container committed by `h3_sglang/sage-ab.sh`. Leave it unset for FlashAttention,
+which every measurement so far used.
 - **One H3 load per group.** A group given two H3 variants (say `h3-turbo,h3`) exits at start, which is
   `kuno-h3-worker`'s rule on 141 GB H200s and 180 GB B200s. That group's profiles are reported as failed.
 - **Tested.** Only with `KUNO_SMOKE_MOCK=1` so far (2026-09-17).
