@@ -128,3 +128,12 @@ The slope column fits `1 + slope × (d − 5)` to the measured per-second cost a
    SGLang also runs faster (LMSYS measured diffusers at 1.9x slower).
 3. **Stop running fl2va and ref2va on the same GPUs.** On H200 and B200, give each C4 worker one variant.
 4. **Update `profiles.json`:** `h3-turbo` weight 19 and slope 0.072; `h3` slope 0.093.
+
+## Update, 2026-09-17
+
+- **Done:** item 1 (passes + 1, confirmed through the worker at 8 and 50 passes), item 2 (Turbo on its own SGLang
+  server), item 3 (one H3 load per worker, refused otherwise) and item 4 (`profiles.json` weights).
+- **One GPU:** `h3-turbo` now serves on one GPU, with VCU 18 and slope 0.08 for one-GPU serving through the worker. The
+  VCU table above describes four-GPU serving against SGLang directly.
+- **Private-only:** full `h3` and `h3-reference` are Private-only.
+- **Details:** `research/h3-image-check_2026-09-17.md`.

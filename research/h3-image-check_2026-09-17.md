@@ -106,12 +106,28 @@ rendered on one H200 each, concurrently with the H3 runs.
   $0.18 and $0.073 per output second, against prices of $0.39 and $0.25 Private. An RTX PRO 6000 is much cheaper for
   1440p (29 GPU-s/s at $1.879/h).
 
+## Decided and done (2026-09-17, subnet `ea6d1c1`)
+
+- **`h3-turbo` serves on one GPU.** `gpus_per_worker` is 1, `min_vram_gb` 141, and the verified classes are the `C2.*.x1`
+  ones.
+  - **Envelope, by GPU memory:** 10 s on a 141 GB H200 (interpolated, about 134 GB at 10 s) and the profile's 14 s on
+    160 GB or more (unmeasured on those cards).
+  - **VCU:** 18 at 768p, slope 0.08, from 10.9 GPU-s per output second at 5 s through the worker. Both roundings favour
+    miners.
+  - **CVM shapes:** Turbo moved from the `c8.*` whole-server shapes to the single-GPU `c2.*.x1` ones.
+- **SageAttention is built into the H3 image, off by default.**
+  - `KUNO_H3_ATTENTION=sage` adds `--attention-backend sage_attn`; the default runs FlashAttention as every measurement
+    did.
+  - The worker's start-up log names the backend it used. Receipts don't carry it yet.
+- **Full `h3` and `h3-reference` are Private-only.** Their Standard prices ($0.06, a fifth of cost or less) were removed,
+  so the gateway refuses Standard jobs for them with its existing `privacy_mode_unavailable`, before any charge.
+
 ## Next
 
 1. **Watch the Turbo clips** (`data/gpu-tests/ltx-2.5/smoke-20260917T191725Z_h3-turbo.mp4` and the SageAttention pair)
    against 2026-09-16's 7-pass clips, to confirm the quality of 8 real passes and of SageAttention.
-2. **Decide 1-GPU Turbo serving** (a new hardware class and envelope), and re-measure its VCU weight.
-3. **Decide on SageAttention** in the H3 image: it adds a build step and a second attention implementation to pin in
-   the recipe.
-4. **Standard full H3 at $0.06** is a fifth of its $0.295 floor; Private at $0.30 is fine. Decide whether Standard
-   should offer full H3 at all.
+2. **Run one-GPU Turbo through the worker on an H200:** `--num-gpus 1`, a 10 s render watched for peak memory (the
+   envelope's interpolated rung), and the ×1 `gpu_seconds` in the receipt.
+3. **Switch Turbo to SageAttention** once the owner has compared the clips, and confirm from the rebuilt image that
+   SGLang's log says `sage_attn`.
+4. **Done:** full H3 and H3 Director are Private-only.
