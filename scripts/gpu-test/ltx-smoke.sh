@@ -90,6 +90,12 @@ JOB_TIMEOUT="${KUNO_SMOKE_JOB_TIMEOUT:-1800}"
 GPU_CHECK_IMAGE="${KUNO_SMOKE_GPU_CHECK_IMAGE:-ubuntu:24.04}"
 MIN_DRIVER="${KUNO_SMOKE_MIN_DRIVER:-$D_DRIVER}"
 MIN_GPU_MIB="${KUNO_SMOKE_MIN_GPU_MIB:-$D_GPU_MIB}"
+# One H3 worker needs four GPUs for h3 or h3-reference and one for h3-turbo alone (profiles.json gpus_per_worker,
+# 2026-09-17). KUNO_SMOKE_MIN_GPUS overrides it for every worker.
+h3_gpus_for() { # profiles, comma-separated
+  case ",$1," in *,h3,* | *,h3-reference,*) echo 4 ;; *) echo 1 ;; esac
+}
+if [ "$FAMILY" = h3 ]; then D_GPUS="$(h3_gpus_for "$PROFILES")"; fi
 MIN_GPUS="${KUNO_SMOKE_MIN_GPUS:-$D_GPUS}"
 # Where the test customer is, sent as x-kuno-country (the dev gateway honours it). H3 is only served outside the
 # licence's Excluded Territories, and a request from an unknown country counts as excluded, so H3 runs need it.
@@ -338,17 +344,21 @@ check_prerequisites() {
       else
         pre_fail gpu-memory "$HOST_GPU has $HOST_GPU_MIB MiB; $FAMILY needs $MIN_GPU_MIB MiB per GPU"
       fi
-      local lists=() list top problem=""
+      local lists=() list top problem="" i need
       if [ ${#GROUP_GPUS[@]} -gt 0 ]; then lists=("${GROUP_GPUS[@]}"); elif [ -n "$GPUS" ]; then lists=("$GPUS"); fi
-      for list in ${lists[@]+"${lists[@]}"}; do
+      for i in ${lists[@]+"${!lists[@]}"}; do
+        list="${lists[$i]}"
+        need="$MIN_GPUS"
+        # A group's own profiles decide its minimum: a one-GPU h3-turbo group beside a four-GPU h3 one.
+        if [ ${#GROUP_GPUS[@]} -gt 0 ] && [ "$FAMILY" = h3 ] && [ -z "${KUNO_SMOKE_MIN_GPUS:-}" ]; then need="$(h3_gpus_for "${GROUP_PROFILES[$i]}")"; fi
         top="$(printf '%s\n' "${list//,/$'\n'}" | sort -n | tail -n 1)"
         if [ "$top" -ge "$HOST_GPU_COUNT" ]; then problem="GPU $top does not exist: the host has $HOST_GPU_COUNT (indices 0-$((HOST_GPU_COUNT - 1)))" && break; fi
-        if [ "$(gpu_count "$list")" -lt "$MIN_GPUS" ]; then problem="GPUs $list are $(gpu_count "$list"); $FAMILY needs $MIN_GPUS in one worker" && break; fi
+        if [ "$(gpu_count "$list")" -lt "$need" ]; then problem="GPUs $list are $(gpu_count "$list"); ${GROUP_PROFILES[$i]:-$PROFILES} needs $need in one worker" && break; fi
       done
       if [ -n "$problem" ]; then
         pre_fail gpu-count "$problem"
       elif [ ${#lists[@]} -gt 0 ]; then
-        pre_ok gpu-count "$HOST_GPU_COUNT on the host; worker GPUs: ${lists[*]} (at least $MIN_GPUS each)"
+        pre_ok gpu-count "$HOST_GPU_COUNT on the host; worker GPUs: ${lists[*]} (enough for each worker's profiles)"
       elif [ "$HOST_GPU_COUNT" -ge "$MIN_GPUS" ]; then
         pre_ok gpu-count "$HOST_GPU_COUNT (needs $MIN_GPUS)"
       else

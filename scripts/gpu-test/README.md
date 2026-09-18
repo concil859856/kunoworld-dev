@@ -326,7 +326,7 @@ All optional.
 | `KUNO_SMOKE_DOWNLOAD_WORKERS` | `4` | Files downloaded in parallel |
 | `KUNO_SMOKE_PORT` | `18180` | Gateway port on 127.0.0.1 |
 | `KUNO_SMOKE_REGISTER_TIMEOUT`, `KUNO_SMOKE_JOB_TIMEOUT` | `2700`, `1800` | Seconds |
-| `KUNO_SMOKE_MIN_DRIVER`, `_MIN_GPU_MIB`, `_MIN_DISK_GB`, `_MIN_RAM_GB`, `_MIN_GPUS` | `570`, `80000`, `200`, `64`, `1` (H3: `580`, `140000`, `4` GPUs) | Prerequisite thresholds |
+| `KUNO_SMOKE_MIN_DRIVER`, `_MIN_GPU_MIB`, `_MIN_DISK_GB`, `_MIN_RAM_GB`, `_MIN_GPUS` | `570`, `80000`, `200`, `64`, `1` (H3: `580`, `140000`, and 4 GPUs per worker for `h3` or `h3-reference`, 1 for `h3-turbo` alone) | Prerequisite thresholds |
 | `KUNO_SMOKE_MOCK` | `0` | `1`: the dry run below |
 
 ## Dry run without a GPU

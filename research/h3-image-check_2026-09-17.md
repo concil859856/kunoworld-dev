@@ -129,11 +129,53 @@ rendered on one H200 each, concurrently with the H3 runs.
 - **Full `h3` and `h3-reference` are Private-only.** Their Standard prices ($0.06, a fifth of cost or less) were removed,
   so the gateway refuses Standard jobs for them with its existing `privacy_mode_unavailable`, before any charge.
 
+## One-GPU Turbo through the worker, and SageAttention from the image (2026-09-18)
+
+**Setup.** Shadeform excesssupply 8x H200 141 GB, `tokyo-japan-5`, $32/h: still the only licensed H3 capacity. Created
+12:45 UTC, active 12:57:49 (pending 12 min, unbilled), deleted about 13:18, **$10.46**. Region check PASS (JP). Image
+`h3-0.1.0-1511c921bb89` (SageAttention on by default for Turbo on H200s), gateway `65e4bc789542`. Driver:
+`scratchpad/turbo1/` (`stage/turbo1-run.sh`); one `ltx-smoke.sh` run, `h3-turbo` on GPU 0, 10 s, Private, JP.
+
+| What | Result |
+|---|---|
+| `auto` on an H200, inside the image | NVML reports `[9, 0]`; the Turbo server gets `sage`, fl2va keeps `default` |
+| 10 s `h3-turbo` through the worker and a real gateway | **PASS**: 1344x768, 10.125 s, 243 frames, H.264 + AAC, SHA-256 matches the receipt |
+| Worker start to registered | 200.4 s (the one-GPU server loading H3 and the LoRA) |
+| Job | 146.7 s; receipt `gpu_seconds` 146.32, so **14.6 GPU-s per output second** at 10 s (10.9 at 5 s) |
+| Peak memory, GPU 0 | **134,935 MiB** of 143,771 (nvidia-smi every second); SGLang's own figure 133,674 MB |
+| Attention actually run | **FlashAttention**, not SageAttention (below) |
+
+**SageAttention silently fell back.** The worker started the Turbo server with `--attention-backend sage_attn`, and
+SGLang logged `Installed Sage Attention is missing the SM90 binding fix. Falling back to Flash Attention`, then
+`Using fa attention backend`. SGLang's Hopper test is one import,
+`from sageattention.sm90_compile import qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_inst_buf_fake_impl`, which loads
+the SM90 kernel. That kernel calls the driver's `cuTensorMapEncodeTiled`, but the image built it against an empty
+`libcuda.so` stub, and the linker (`--as-needed`) dropped a library that supplied nothing: the `.so` had the symbol
+undefined and no `NEEDED libcuda.so.1`. Reproduced without a GPU (a fake `libcuda.so.1` on `LD_LIBRARY_PATH` still gives
+`undefined symbol: cuTensorMapEncodeTiled`). The 2026-09-17 A/B built SageAttention on the box against the real
+driver library, which is why it worked there; its numbers stand.
+- **Fixed in subnet `afab6c1`:** the stub defines `cuTensorMapEncodeTiled`, so the kernel needs `libcuda.so.1`; the
+  build fails if any kernel calls a `cu*` function without that entry, and runs SGLang's import test against the stub.
+- **And the silent fallback can't recur unnoticed:** `kuno-h3-worker` runs the same import on the GPU before it gives
+  a server SageAttention. `auto` falls back to FlashAttention and logs the error; `sage` by name refuses to start.
+
+**What the 10 s run settles anyway.** The envelope's 10 s rung on a 141 GB card holds: FlashAttention peaks at
+134,935 MiB, leaving 8,836 MiB of the card (the interpolation had said about 134 GB), and SageAttention's measured
++2.3 GB would still leave about 6.5 GB. Per output second, 10 s costs 14.6 GPU-s against 10.9 at 5 s, a floor (cost x 1.25 /
+0.60) of about **$0.068/s**. The job was priced at $0.91 Private ($0.091/s with the length slope), which covers it;
+Standard at 10 s is about $0.056/s, under the floor, as PRICING.md already says of long Turbo clips.
+
+**Also found:** `ltx-smoke.sh` required four GPUs for any H3 worker, so a one-GPU `h3-turbo` run refused to start (the
+first attempt on the box, fixed there with `KUNO_SMOKE_MIN_GPUS=1`). It now takes one GPU for `h3-turbo` alone and four
+when `h3` or `h3-reference` is in the worker, per group.
+
+**Still to run on a GPU:** the rebuilt image's SageAttention (the fix above), and a 10 s SageAttention peak.
+
 ## Next
 
 1. **Done 2026-09-18 for SageAttention:** the owner watched the pair and could not tell them apart.
-2. **Run one-GPU Turbo through the worker on an H200:** `--num-gpus 1`, a 10 s render watched for peak memory (the
-   envelope's interpolated rung), and the ×1 `gpu_seconds` in the receipt.
+2. **Done 2026-09-18 for FlashAttention** (section above): 10 s through the worker on one H200, 134,935 MiB peak,
+   146.3 `gpu_seconds`. SageAttention from the image fell back; its fix still needs a GPU run.
 3. **Switched 2026-09-18** (subnet `1511c92`). Still to confirm on a GPU, from the rebuilt image, that SGLang's log says
    `sage_attn` and that a 10 s clip fits one H200 with SageAttention's extra ~2 GB (step 2 covers both).
 4. **Done:** full H3 and H3 Director are Private-only.
