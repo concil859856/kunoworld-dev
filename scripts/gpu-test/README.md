@@ -200,7 +200,7 @@ KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0:h3-turbo 1,2,3,4
 
 **`KUNO_SMOKE_H3_ATTENTION=sage`** passes `KUNO_H3_ATTENTION=sage` to every H3 worker, which starts its SGLang servers
 with `--attention-backend sage_attn`. It needs an image with SageAttention built in, which the worker refuses to run
-without; the published `h3-0.1.0-69e34d62492b` image has not got it, and the A/B of 2026-09-17 was run in a container
+without; the published `h3-0.1.0-fda88a73e660` image has not got it, and the A/B of 2026-09-17 was run in a container
 committed by `h3_sglang/sage-ab.sh`. Leave it unset for FlashAttention, which every measurement so far used.
 - **One H3 load per group.** A group given two H3 variants (say `h3-turbo,h3`) exits at start, which is
   `kuno-h3-worker`'s rule on 141 GB H200s and 180 GB B200s. That group's profiles are reported as failed.
@@ -316,7 +316,7 @@ All optional.
 | `KUNO_SMOKE_WEIGHTS_VERIFY` | `full` | `KUNO_WEIGHTS_VERIFY` (`size` needs `KUNO_MODEL_DIGEST`) |
 | `KUNO_MODEL_DIGEST` | unset | Passed to the worker when set |
 | `KUNO_SMOKE_REGISTRY` | `ghcr.io/concil859856` | Image registry and namespace |
-| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-69e34d62492b` (or `h3-0.1.0-69e34d62492b`), `cc8e9fb2553d`, `69e34d62492b` | Image tags |
+| `KUNO_SMOKE_WORKER_TAG`, `_GATEWAY_TAG`, `_DEVKIT_TAG` | `ltx-0.1.0-fda88a73e660` (or `h3-0.1.0-fda88a73e660`), `65e4bc789542`, `fda88a73e660` | Image tags |
 | `KUNO_SMOKE_WORKER_IMAGE`, `_GATEWAY_IMAGE`, `_DEVKIT_IMAGE` | built from the two rows above | Whole image references, e.g. `…@sha256:…` |
 | `KUNO_SMOKE_SKIP_LOGIN`, `KUNO_SMOKE_REGISTRY_USER` | `0`, `concil859856` | Skip `docker login` (public images); the login user name |
 | `KUNO_SMOKE_PULL` | `always` | `missing`: use an image already on this machine (e.g. one built there) and pull the rest |
@@ -346,9 +346,9 @@ published one, since no local `kunoworld/gateway:local` build is needed:
 
 ```bash
 KUNO_SMOKE_MOCK=1 KUNO_SMOKE_FAMILY=h3 KUNO_SMOKE_COUNTRY=JP KUNO_SMOKE_GROUPS="0,1,2,3:h3-turbo 4,5,6,7:h3" \
-  KUNO_SMOKE_WORKER_IMAGE=ghcr.io/concil859856/kunoworld-worker:h3-0.1.0-69e34d62492b \
-  KUNO_SMOKE_GATEWAY_IMAGE=ghcr.io/concil859856/kunoworld-gateway:cc8e9fb2553d \
-  KUNO_SMOKE_DEVKIT_IMAGE=ghcr.io/concil859856/kunoworld-mock-worker:69e34d62492b KUNO_SMOKE_DIR=/tmp/gpu-smoke-h3 scripts/gpu-test/ltx-smoke.sh
+  KUNO_SMOKE_WORKER_IMAGE=ghcr.io/concil859856/kunoworld-worker:h3-0.1.0-fda88a73e660 \
+  KUNO_SMOKE_GATEWAY_IMAGE=ghcr.io/concil859856/kunoworld-gateway:65e4bc789542 \
+  KUNO_SMOKE_DEVKIT_IMAGE=ghcr.io/concil859856/kunoworld-mock-worker:fda88a73e660 KUNO_SMOKE_DIR=/tmp/gpu-smoke-h3 scripts/gpu-test/ltx-smoke.sh
 ```
 
 On 2026-09-17 three dry runs passed:
