@@ -144,7 +144,7 @@ uv run pytest -q          # the Python suite alone, including the integration te
 ```
 
 Run `pytest` from this directory, not inside a repository: `pytest subnet` misses the integration tests in `tests/`.
-On 2026-09-18 the Python suite was 2,424 tests, all passing.
+On 2026-09-18 the Python suite was 2,427 tests, all passing.
 
 The suite covers, among other things:
 - the encrypted round trip end to end, and that no plaintext prompt, input or output reaches the gateway's database
